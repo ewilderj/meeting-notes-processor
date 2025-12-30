@@ -138,18 +138,23 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ✅ Handle concurrent processing and git conflicts
 - ✅ Add daemon logging and configuration file
 
-#### Phase 4: Repository Separation (Proposed)
-- ⏳ Separate code repository from data repository
-- ⏳ Configure webhook daemon to work with separate data repo
-- ⏳ Update GitHub Actions to work across repositories
-- ⏳ Document deployment and configuration for separated architecture
-- ⏳ Add remote repository configuration support
+#### Phase 4: Repository Separation (Complete)
+- ✅ Separate code repository from data repository
+- ✅ Configure webhook daemon to work with separate data repo
+- ✅ Update GitHub Actions to work across repositories
+- ✅ Document deployment and configuration for separated architecture
+- ✅ Add remote repository configuration support
+- ✅ Fix file path handling with `cwd` parameter in subprocess calls
+- ✅ Fix git operations to use relative paths within data repository
+- ✅ Unified token naming to `GH_TOKEN` for consistency
+- ✅ Created example transcripts and test tooling
 
-#### Phase 5: Enhancement
-- ⏳ Add configuration file for default LLM and other settings
-- ⏳ Implement duplicate detection
+#### Phase 5: Enhancement (Future)
+- ⏳ Add duplicate detection
 - ⏳ Add search and indexing capabilities
 - ⏳ Support additional LLM backends
+- ⏳ Implement semantic search using vector embeddings
+- ⏳ Add web interface for browsing processed notes
 
 ## Non-Functional Requirements
 
@@ -325,303 +330,184 @@ git:
 
 ---
 
-## Phase 4: Repository Separation
+## Phase 4: Repository Separation - Implementation Notes
 
-### Problem Statement
+### Status: COMPLETE ✅
 
-Currently, the processing code (`run_summarization.py`, `webhook_daemon.py`, etc.) lives in the same repository as the data (transcripts and notes). This creates several issues:
+The repository separation has been successfully implemented and tested. The system now supports both same-repository and separated-repository architectures, with separated being the recommended approach.
 
-1. **Mixing concerns**: Code changes trigger GitHub Actions even when no transcripts need processing
-2. **Version history pollution**: Data changes make it harder to track code evolution
-3. **Access control**: Different teams may need different permissions for code vs. data
-4. **Deployment complexity**: Code updates require touching the data repository
-5. **Scaling**: Large data repositories make code cloning slow
+### What Was Built
 
-### Proposed Architecture
-
-**Two Repositories:**
-
-1. **Code Repository** (`meeting-notes-processor`)
-   - `run_summarization.py`
-   - `webhook_daemon.py`
-   - `config.yaml`
-   - `.github/workflows/`
-   - `package.json`
-   - Documentation (README, PRD, AGENTS)
+**Two Repository Architecture:**
+1. **Code Repository** (`meeting-notes-processor`) - This repository
+   - Processing scripts with `WORKSPACE_DIR` environment variable support
+   - Webhook daemon with configurable paths via `config.yaml`
+   - GitHub Actions workflow template for data repositories
+   - Example transcripts and testing utilities
    
-2. **Data Repository** (`meeting-notes`)
-   - `inbox/`
-   - `transcripts/`
-   - `notes/`
-   - Optional: README describing archive structure
+2. **Data Repository** (user-created, e.g., `my-meeting-notes`)
+   - `inbox/` - Drop zone for new transcripts
+   - `transcripts/` - Processed original transcripts
+   - `notes/` - AI-generated org-mode summaries
+   - `.github/workflows/` - Optional automation
+
+### Key Technical Achievements
+
+**1. Path Handling with `cwd` Parameter**
+- All subprocess calls (Copilot CLI, Gemini CLI, git commands) now use `cwd=WORKSPACE_DIR`
+- This allows the processor to run from one directory while operating on files in another
+- Solves the "outside repository" git errors that occurred with relative paths
+
+**2. Relative Path Conversion for Git**
+- Git operations convert all paths to be relative to `WORKSPACE_DIR` before execution
+- Uses `os.path.relpath()` to compute paths from within the data repository
+- Git properly detects file moves/renames (shows as R100 in commit history)
+
+**3. Unified Token Management**
+- Changed from `GITHUB_TOKEN` to `GH_TOKEN` throughout codebase
+- Single token used for both webhook daemon (local) and GitHub Actions (cloud)
+- Fine-grained Personal Access Token with:
+  - Contents: Read and write
+  - Copilot Requests (for Copilot CLI authentication)
+
+**4. Example Transcripts**
+Created three realistic example transcripts in `examples/`:
+- `q1-planning-sarah.txt` - Business planning meeting
+- `dunder-mifflin-sales.txt` - Sales strategy (The Office characters)
+- `mad-men-heinz.txt` - Advertising brainstorm (Mad Men characters)
+
+**5. Testing Utility**
+- `test_webhook.py` - Sends example transcripts to webhook daemon
+- Uses PEP 723 inline script metadata for dependencies
+- Simplifies testing and demonstration
 
 ### How It Works
 
-#### Webhook Daemon Scenario
+#### Local Development with Separated Repos
 
-```yaml
-# config.yaml in meeting-notes-processor
-directories:
-  inbox: ../meeting-notes/inbox          # Relative path to data repo
-  repository: ../meeting-notes           # Data repo root
-  
-git:
-  repository_url: "github.com/ewilderj/meeting-notes.git"
-```
-
-**Workflow:**
-1. MacWhisper sends webhook to daemon (running from code repo)
-2. Daemon writes transcript to `../meeting-notes/inbox/`
-3. Daemon commits and pushes to data repo (`meeting-notes`)
-4. GitHub Actions in data repo triggers and processes transcript
-5. Processing results committed back to data repo
-
-#### GitHub Actions Scenario
-
-**Option A: Data Repo Triggers Code Repo**
-
-```yaml
-# .github/workflows/process-transcripts.yml (in meeting-notes data repo)
-on:
-  push:
-    paths:
-      - 'inbox/**'
-
-jobs:
-  process:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout data repo
-        uses: actions/checkout@v4
-        with:
-          path: meeting-notes
-          
-      - name: Checkout processor repo
-        uses: actions/checkout@v4
-        with:
-          repository: ewilderj/meeting-notes-processor
-          path: processor
-          
-      - name: Setup dependencies
-        run: |
-          cd processor
-          npm install
-          
-      - name: Process transcripts
-        run: |
-          cd processor
-          uv run run_summarization.py --git
-        env:
-          WORKSPACE_DIR: ../meeting-notes
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          
-      - name: Commit results
-        run: |
-          cd meeting-notes
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add transcripts/ notes/
-          git commit -m "Process transcripts" || echo "No changes"
-          git push
-```
-
-**Option B: Code Repo Monitors Data Repo**
-
-```yaml
-# .github/workflows/watch-data-repo.yml (in meeting-notes-processor code repo)
-on:
-  schedule:
-    - cron: '*/5 * * * *'  # Check every 5 minutes
-  workflow_dispatch:
-
-jobs:
-  check-and-process:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout processor
-        uses: actions/checkout@v4
-        
-      - name: Checkout data repo
-        uses: actions/checkout@v4
-        with:
-          repository: ewilderj/meeting-notes
-          path: data
-          token: ${{ secrets.GH_TOKEN }}
-          
-      - name: Check for inbox files
-        id: check
-        run: |
-          if [ -n "$(ls -A data/inbox/*.txt 2>/dev/null)" ]; then
-            echo "has_files=true" >> $GITHUB_OUTPUT
-          fi
-          
-      - name: Process if needed
-        if: steps.check.outputs.has_files == 'true'
-        run: |
-          uv run run_summarization.py --git
-        env:
-          WORKSPACE_DIR: ./data
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-```
-
-### Configuration Changes Needed
-
-#### `run_summarization.py`
-
-Add support for `WORKSPACE_DIR` environment variable:
-
-```python
-WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', '.')
-INBOX_DIR = os.path.join(WORKSPACE_DIR, 'inbox')
-TRANSCRIPTS_DIR = os.path.join(WORKSPACE_DIR, 'transcripts')
-NOTES_DIR = os.path.join(WORKSPACE_DIR, 'notes')
-```
-
-#### `webhook_daemon.py`
-
-Already supports configurable directories via `config.yaml`:
-
-```yaml
-directories:
-  inbox: /absolute/path/to/meeting-notes/inbox
-  repository: /absolute/path/to/meeting-notes
-```
-
-Or relative paths:
-
-```yaml
-directories:
-  inbox: ../meeting-notes/inbox
-  repository: ../meeting-notes
-```
-
-### Deployment Models
-
-#### Local Development
-
-```
+```bash
+# Directory structure
 ~/projects/
 ├── meeting-notes-processor/  (code repo)
-│   ├── run_summarization.py
-│   ├── webhook_daemon.py
-│   └── config.yaml (points to ../meeting-notes)
-└── meeting-notes/            (data repo)
-    ├── inbox/
-    ├── transcripts/
-    └── notes/
-```
-
-Running daemon:
-```bash
-cd meeting-notes-processor
-uv run webhook_daemon.py
-```
-
-#### Cloud/Server Deployment
-
-```bash
-# Clone both repos
-git clone https://github.com/ewilderj/meeting-notes-processor.git
-git clone https://github.com/ewilderj/meeting-notes.git
+└── my-meeting-notes/          (data repo)
 
 # Configure processor
 cd meeting-notes-processor
-cat > config.yaml <<EOF
+# Edit config.yaml to point to ../my-meeting-notes
+
+# Process transcripts
+WORKSPACE_DIR=../my-meeting-notes uv run run_summarization.py
+
+# Run webhook daemon
+GH_TOKEN=xxx uv run webhook_daemon.py
+```
+
+#### GitHub Actions
+
+The data repository contains a workflow that:
+1. Checks out both data repo and processor repo
+2. Checks if inbox has files (skips if empty)
+3. Runs processor with `WORKSPACE_DIR=../meeting-notes`
+4. Processor commits results directly to data repo (using `--git` flag)
+
+**Key improvement:** The processor handles git operations internally, eliminating the need for a separate commit step in the workflow.
+
+### Configuration File Changes
+
+**config.yaml in processor repo:**
+```yaml
 server:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 9876
 
 directories:
-  inbox: ../meeting-notes/inbox
-  repository: ../meeting-notes
+  inbox: ../my-meeting-notes/inbox
+  repository: ../my-meeting-notes
 
 git:
   auto_commit: true
   auto_push: true
-  repository_url: "github.com/ewilderj/meeting-notes.git"
-EOF
-
-# Run daemon (with token for git push)
-GITHUB_TOKEN=xxx uv run webhook_daemon.py &
+  repository_url: "github.com/USERNAME/my-meeting-notes.git"
+  commit_message_template: "Add transcript: {title}"
 ```
 
-### Migration Path
+### Workflow Template
 
-1. **Create new code repository** (`meeting-notes-processor`)
-   - Move Python scripts, config, workflows
-   - Update paths in config and workflows
-   - Test locally with both repos
+Created `workflows-templates/process-transcripts-data-repo.yml` with:
+- Early inbox check to skip processing if empty
+- Conditional execution of all steps
+- Proper git configuration before processing
+- `--git` flag for automated commits
 
-2. **Update data repository** (`meeting-notes`)
-   - Remove code files
-   - Keep only data directories
-   - Update README to reference processor repo
+### Documentation Updates
 
-3. **Update GitHub Actions**
-   - Choose Option A or B above
-   - Configure secrets and permissions
-   - Test with a sample transcript
+- **README.md**: Completely rewritten to prioritize separated repository setup
+- **AGENTS.md**: Updated with `WORKSPACE_DIR` usage and `GH_TOKEN` examples
+- **workflows-templates/README.md**: Instructions for using workflow templates
 
-4. **Update documentation**
-   - README in both repos
-   - Update AGENTS.md with new paths
-   - Update this PRD
+### Testing & Validation
 
-### Advantages
+Tested scenarios:
+✅ Processing with `WORKSPACE_DIR` set (separated repos)
+✅ Processing without `WORKSPACE_DIR` (same repo)
+✅ Webhook daemon receiving and committing transcripts
+✅ Git operations with proper file renames and deletions
+✅ GitHub Actions workflow with empty and non-empty inbox
+✅ Example transcripts through webhook test script
 
-- ✅ **Clean separation**: Code and data evolve independently
-- ✅ **Better git history**: Easy to see code changes vs. data changes
-- ✅ **Flexible deployment**: Can run processor anywhere
-- ✅ **Access control**: Different permissions for code maintainers vs. data users
-- ✅ **Faster cloning**: Code repo is small and fast
-- ✅ **Testing**: Can test processor against sample data without affecting production
+### Resolved Issues
 
-### Trade-offs
+**Git "outside repository" errors:**
+- Fixed by using `cwd` parameter in subprocess calls
+- Fixed by converting file paths to relative paths before git operations
 
-- ❌ **Complexity**: Two repos to manage instead of one
-- ❌ **Configuration**: Need to coordinate paths between repos
-- ❌ **GitHub Actions**: More complex workflow with two checkouts
-- ❌ **Local setup**: Users need to clone both repos
+**Inbox file deletion in git:**
+- Changed from `git rm` to `git add` to stage deletions
+- Git automatically detects moved files as renames
 
-### Recommendation
+**Token confusion:**
+- Unified to `GH_TOKEN` for both local and Actions use
+- Documented fine-grained PAT requirements clearly
 
-**Option A (Data repo triggers processor)** is recommended because:
-- Data changes are the natural trigger (new transcript in inbox)
-- All logic stays in data repo's workflow
-- Processor repo is truly just code (no workflows needed)
-- Simpler mental model: "data repo watches inbox and calls processor"
+### Deployment Recommendation
 
-### Implementation Tasks (Phase 4)
+**Option A (Implemented):** Data repo triggers processor via GitHub Actions
+- Data repo's workflow checks out processor code
+- Processor runs with `WORKSPACE_DIR` pointing to data repo
+- Processor commits results back to data repo
 
-1. **Create processor repository**
-   - Initialize new repo `meeting-notes-processor`
-   - Move code files from data repo
-   - Add README explaining purpose
+This approach is preferred because:
+- Natural trigger: new files in inbox
+- Simple mental model
+- All automation lives in data repo
+- Processor repo is purely code (no workflows)
 
-2. **Update processor code**
-   - Add `WORKSPACE_DIR` environment variable support
-   - Update config.yaml with proper paths
-   - Test with relative and absolute paths
+### Migration from Same-Repository
 
-3. **Update data repository**
-   - Create new GitHub Actions workflow (Option A)
-   - Configure secrets (GH_TOKEN)
-   - Remove code files (keep data only)
+For users with existing same-repository setups:
+1. Create new data repository with `inbox/`, `transcripts/`, `notes/`
+2. Move data files from old repo to new data repo
+3. Clone processor repo separately
+4. Update `config.yaml` in processor repo
+5. Test with `WORKSPACE_DIR` environment variable
+6. Set up GitHub Actions workflow in data repo
 
-4. **Documentation**
-   - Update README in both repos
-   - Document deployment scenarios
-   - Update AGENTS.md
+The processor supports both models simultaneously - no code changes needed.
 
-5. **Testing**
-   - Test webhook daemon with separated repos
-   - Test GitHub Actions with sample transcript
-   - Verify both local and cloud scenarios work
+### Known Limitations
 
-### Open Questions (Phase 4)
+1. **Relative paths in config.yaml**: Must be relative to processor repo directory
+2. **Manual token setup**: Users must create fine-grained PAT with correct permissions
+3. **Two-repo cloning**: Initial setup requires cloning both repositories
+4. **Path coordination**: Local development needs both repos in expected relative positions
 
-1. Should the data repo workflow always check out latest processor code, or pin to a specific version/tag?
-2. How to handle processor code updates - automatic or require manual data repo workflow updates?
-3. Should there be a "dry run" mode for testing without committing to data repo?
-4. What's the best way to handle configuration differences between local dev and production?
-5. Should we support multiple data repos with one processor (e.g., personal vs. team transcripts)?
+### Future Enhancements (Phase 5)
+
+Potential improvements:
+- Config validation tool to check paths and permissions
+- Setup script to bootstrap data repository structure
+- Docker container with both repos configured
+- Remote data repository support (not just local paths)
+- Multiple data repositories per processor (team vs personal)
+
+---
