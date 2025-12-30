@@ -69,7 +69,7 @@ uv pip install --system package-name
 **Same-repository setup:**
 - **Run the summarization**: `uv run run_summarization.py`
 - **Run webhook daemon**: `uv run webhook_daemon.py`
-- **Run daemon with git push**: `GITHUB_TOKEN=xxx uv run webhook_daemon.py &`
+- **Run daemon with git push**: `GH_TOKEN=xxx uv run webhook_daemon.py &`
 - **Test webhook**: `curl -X POST http://localhost:9876/webhook -H "Content-Type: application/json" -d '{"title": "Test", "transcript": "Content"}'`
 
 **Separated-repository setup:**

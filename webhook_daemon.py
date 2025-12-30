@@ -122,7 +122,7 @@ def git_commit_and_push(filepath, title):
     try:
         # Change to repository directory
         repo_path = Path(REPO_DIR).resolve()
-        github_token = os.environ.get('GITHUB_TOKEN')
+        github_token = os.environ.get('GH_TOKEN')
         
         # Convert filepath to absolute path, then make it relative to the repo
         file_abs_path = Path(filepath).resolve()
