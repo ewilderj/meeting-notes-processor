@@ -200,18 +200,27 @@ def process_transcript(input_file, target='copilot', model=None):
 def git_commit_changes(inbox_files, transcript_files, org_files):
     """Perform git operations: remove inbox files, add new files, and commit."""
     try:
+        # Convert all file paths to be relative to WORKSPACE_DIR
+        workspace_abs = os.path.abspath(WORKSPACE_DIR)
+        
+        def make_relative(filepath):
+            """Convert filepath to be relative to WORKSPACE_DIR."""
+            abs_path = os.path.abspath(filepath)
+            return os.path.relpath(abs_path, workspace_abs)
+        
         # Git rm the processed inbox files
         for inbox_file in inbox_files:
-            result = subprocess.run(['git', 'rm', inbox_file], capture_output=True, text=True)
+            rel_path = make_relative(inbox_file)
+            result = subprocess.run(['git', 'rm', rel_path], capture_output=True, text=True, cwd=WORKSPACE_DIR)
             if result.returncode != 0:
-                print(f"  Warning: git rm failed for {inbox_file}: {result.stderr}")
+                print(f"  Warning: git rm failed for {rel_path}: {result.stderr}")
             else:
-                print(f"  Git removed: {inbox_file}")
+                print(f"  Git removed: {rel_path}")
         
         # Git add the new transcript and org files
-        files_to_add = transcript_files + org_files
+        files_to_add = [make_relative(f) for f in transcript_files + org_files]
         if files_to_add:
-            result = subprocess.run(['git', 'add'] + files_to_add, capture_output=True, text=True)
+            result = subprocess.run(['git', 'add'] + files_to_add, capture_output=True, text=True, cwd=WORKSPACE_DIR)
             if result.returncode != 0:
                 print(f"  Error: git add failed: {result.stderr}")
                 return False
@@ -229,7 +238,7 @@ def git_commit_changes(inbox_files, transcript_files, org_files):
             commit_msg = f"Process {len(transcript_files)} transcripts"
         
         # Commit the changes
-        result = subprocess.run(['git', 'commit', '-m', commit_msg], capture_output=True, text=True)
+        result = subprocess.run(['git', 'commit', '-m', commit_msg], capture_output=True, text=True, cwd=WORKSPACE_DIR)
         if result.returncode != 0:
             print(f"  Error: git commit failed: {result.stderr}")
             return False
