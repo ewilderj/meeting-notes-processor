@@ -1,0 +1,73 @@
+name: Process Transcripts (Separated Repos)
+
+# This workflow is designed for the separated repository architecture:
+# - Data repo (meeting-notes): Contains inbox/, transcripts/, notes/
+# - Code repo (meeting-notes-processor): Contains scripts and this workflow
+#
+# Triggers when files are added to inbox/ in the data repo
+
+on:
+  push:
+    paths:
+      - 'inbox/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout data repository
+        uses: actions/checkout@v4
+        with:
+          path: meeting-notes
+          token: ${{ secrets.GH_TOKEN }}
+          
+      - name: Checkout processor repository
+        uses: actions/checkout@v4
+        with:
+          repository: ewilderj/meeting-notes-processor
+          path: processor
+          
+      - name: Setup Python with uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          
+      - name: Install Node dependencies
+        run: |
+          cd processor
+          npm install
+          
+      - name: Process transcripts
+        run: |
+          cd processor
+          uv run run_summarization.py --git
+        env:
+          WORKSPACE_DIR: ../meeting-notes
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          
+      - name: Commit processed files to data repo
+        run: |
+          cd meeting-notes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add processed files
+          git add transcripts/ notes/ inbox/
+          
+          # Commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Process transcripts [automated]"
+            git push
+          fi
