@@ -208,14 +208,15 @@ def git_commit_changes(inbox_files, transcript_files, org_files):
             abs_path = os.path.abspath(filepath)
             return os.path.relpath(abs_path, workspace_abs)
         
-        # Git rm the processed inbox files
-        for inbox_file in inbox_files:
-            rel_path = make_relative(inbox_file)
-            result = subprocess.run(['git', 'rm', rel_path], capture_output=True, text=True, cwd=WORKSPACE_DIR)
+        # Stage deletions of inbox files (they've already been moved)
+        # Use 'git add' to stage the deletions since files are already gone
+        inbox_paths = [make_relative(f) for f in inbox_files]
+        for rel_path in inbox_paths:
+            result = subprocess.run(['git', 'add', rel_path], capture_output=True, text=True, cwd=WORKSPACE_DIR)
             if result.returncode != 0:
-                print(f"  Warning: git rm failed for {rel_path}: {result.stderr}")
+                print(f"  Warning: git add (deletion) failed for {rel_path}: {result.stderr}")
             else:
-                print(f"  Git removed: {rel_path}")
+                print(f"  Git staged deletion: {rel_path}")
         
         # Git add the new transcript and org files
         files_to_add = [make_relative(f) for f in transcript_files + org_files]
