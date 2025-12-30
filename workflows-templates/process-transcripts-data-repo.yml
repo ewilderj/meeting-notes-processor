@@ -5,6 +5,10 @@ name: Process Transcripts (Separated Repos)
 # - Code repo (meeting-notes-processor): Contains scripts and this workflow
 #
 # Triggers when files are added to inbox/ in the data repo
+#
+# NOTE: This workflow triggers twice - once when files are added to inbox, and again
+# when the processor removes them. The second trigger exits quickly via the inbox check.
+# A more robust solution would use webhooks or workflow_dispatch, but this is simpler.
 
 on:
   push:
