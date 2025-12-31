@@ -52,6 +52,15 @@ Meeting transcripts accumulate rapidly but lack organization and context, making
 - **FR-4.3**: Summary contains structured sections: participants, key topics, action items, decisions
 - **FR-4.4**: Summary links back to original transcript file
 
+### 5. Always-On Agent/Daemon
+
+- **FR-5.1**: System can run as a long-lived daemon/service (always-on) with clear start/stop/restart behavior
+- **FR-5.2**: Daemon syncs the configured data repository on startup and before processing new inbound work (e.g., `git pull --ff-only`)
+- **FR-5.3**: Daemon can optionally trigger a GitHub Actions `workflow_dispatch` in the data repository when new transcripts are added (configurable)
+- **FR-5.4**: Daemon can optionally run a user-configured command hook when new data is detected after a sync (configurable)
+- **FR-5.5**: Daemon logs sync/dispatch/hook outcomes clearly and fails safely (no partial writes or silent drops)
+- **FR-5.6**: If the configured data-repo working directory does not contain a git checkout yet, daemon can bootstrap it by cloning the data repo before syncing/processing
+
 ## Directory Structure
 
 ```
@@ -149,7 +158,14 @@ User selects which LLM to use via command-line argument or configuration, provid
 - ✅ Unified token naming to `GH_TOKEN` for consistency
 - ✅ Created example transcripts and test tooling
 
-#### Phase 5: Enhancement (Future)
+#### Phase 5: Always-On Agent/Daemon (Planned)
+- ⏳ Run continuously as a long-lived service (daemonization guidance)
+- ⏳ Keep the local data repo current via safe `git pull` semantics
+- ⏳ Optionally trigger GitHub Actions via `workflow_dispatch` when configured
+- ⏳ Optionally run a local command hook when new data arrives
+- ⏳ Consider renaming `webhook_daemon.py` to reflect broader responsibilities
+
+#### Phase 6: Enhancement (Future)
 - ⏳ Add duplicate detection
 - ⏳ Add search and indexing capabilities
 - ⏳ Support additional LLM backends
@@ -271,6 +287,42 @@ daemon:
 git:
   auto_push: true
   commit_message_template: "Add transcript: {title}"
+```
+
+**Phase 5 config sketch (proposed additions for always-on behavior):**
+
+```yaml
+# config.yaml (proposed additions)
+
+# Keep the local data repo up to date before writing/committing new work.
+sync:
+  enabled: true
+  on_startup: true
+  before_accepting_webhooks: true
+  checkout_if_missing:
+    enabled: true
+    repo_url: "https://github.com/OWNER/REPO.git" # data repo clone URL
+    branch: "main"
+  pull:
+    remote: origin
+    branch: main
+    ff_only: true
+
+# Optionally trigger a GitHub Actions workflow when new transcripts land.
+github:
+  workflow_dispatch:
+    enabled: false
+    repo: "OWNER/REPO"              # e.g. "ewilderj/meeting-notes"
+    workflow: "process-transcripts.yml" # workflow file name or workflow id
+    ref: "main"
+    inputs: {}
+
+# Optionally run a command when a sync brings in new commits.
+hooks:
+  on_new_commits:
+    enabled: false
+    command: "uv run run_summarization.py --git"
+    working_directory: "."          # typically the data repo root
 ```
 
 ### Implementation Tasks (Phase 3)
