@@ -5,13 +5,15 @@ Automatically transform meeting transcripts into organized, searchable org-mode 
 ## What This Does
 
 Have meeting transcripts piling up? This tool:
-- **Summarizes** transcripts using AI (Claude, Gemini, etc.)
+- **Summarizes** transcripts using AI (Claude, GPT-5, Gemini, etc.)
 - **Extracts** action items, decisions, and open questions
 - **Organizes** with meaningful filenames based on content, not timestamps
 - **Formats** as org-mode files compatible with Emacs, Obsidian, and other tools
 - **Automates** the entire pipeline via GitHub Actions or webhook
 
 Perfect for processing transcripts from MacWhisper, Zoom, Teams, Google Meet, or any text-based recording tool.
+
+**AI Model Support:** Use any model from GitHub Copilot (Claude, GPT-5, etc.) or Google Gemini. Adding support for other AI backends is straightforward—see the extensibility note in Requirements.
 
 ## Architecture
 
@@ -180,7 +182,9 @@ uv run run_summarization.py
 # Options
 --target copilot      # Use GitHub Copilot (default, requires @github/copilot CLI)
 --target gemini       # Use Google Gemini (requires @google/gemini-cli)
---model MODEL_NAME    # Specify custom model (e.g., claude-sonnet-4.5)
+--model MODEL_NAME    # Specify model:
+                      #   Copilot: claude-sonnet-4.5, gpt-5.2, etc.
+                      #   Gemini: gemini-3.0-flash-preview, gemini-2.0-pro, etc.
 --git                 # Commit and push results automatically (for CI/CD)
 ```
 
@@ -259,9 +263,15 @@ TL;DR: Discussed Q1 priorities including product roadmap, hiring, and CI/CD.
 
 - **Python 3.11+** with `uv` package manager ([install uv](https://docs.astral.sh/uv/))
 - **Node.js 22+** with npm
-- **AI Backend**: One of:
-  - GitHub Copilot CLI (`npm install -g @github/copilot`) - Requires GitHub Copilot subscription
-  - Google Gemini CLI (`npm install -g @google/gemini-cli`) - Requires Google AI API key
+- **AI Backend**: Choose one:
+  - **GitHub Copilot CLI** (`npm install -g @github/copilot`)
+    - Access to any Copilot-supported model (Claude Sonnet 4.5, GPT-4o, etc.)
+    - Specify with `--model` flag (e.g., `--model claude-sonnet-4.5`)
+    - Requires GitHub Copilot subscription
+  - **Google Gemini CLI** (`npm install -g @google/gemini-cli`)
+    - Access to any Gemini model (Gemini 2.0 Flash, Gemini 1.5 Pro, etc.)
+    - Specify with `--model` flag (e.g., `--model gemini-2.0-flash-exp`)
+    - Requires Google AI API key
 
 **For GitHub Copilot (local development):**
 - Authenticate with `npx @github/copilot auth`
@@ -270,6 +280,8 @@ TL;DR: Discussed Q1 priorities including product roadmap, hiring, and CI/CD.
 **For GitHub Actions:**
 - Copilot CLI authenticates automatically using the `GH_TOKEN` secret
 - Token must be a fine-grained PAT with Contents: write and Copilot Requests permissions
+
+**Extensibility:** Adding support for other AI backends (OpenAI API, Anthropic API, local models, etc.) is straightforward. The processor uses a simple plugin pattern in `run_summarization.py`—see the `process_transcript()` function for the `target` parameter implementation.
 
 ## Configuration
 
