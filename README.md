@@ -184,7 +184,7 @@ uv run run_summarization.py
 --target gemini       # Use Google Gemini (requires @google/gemini-cli)
 --model MODEL_NAME    # Specify model:
                       #   Copilot: claude-sonnet-4.5, gpt-5.2, etc.
-                      #   Gemini: gemini-3.0-flash-preview, gemini-2.0-pro, etc.
+                      #   Gemini: gemini-3.0-flash-preview, gemini-2.5-pro, etc.
 --git                 # Commit and push results automatically (for CI/CD)
 ```
 
