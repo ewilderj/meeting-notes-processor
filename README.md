@@ -7,6 +7,7 @@ Drop a transcript in, get structured summaries with action items, participants, 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Choosing Your Setup](#choosing-your-setup)
 - [Requirements](#requirements)
 - [Setup](#setup)
   - [1. Create Your Data Repository](#1-create-your-data-repository)
@@ -33,7 +34,67 @@ This tool processes meeting transcripts from any source—MacWhisper, Zoom, Team
 
 **AI backends supported:** GitHub Copilot (Claude Opus 4.5, GPT 5.2, etc.) or Google Gemini. See [Requirements](#requirements).
 
-**Architecture:** We recommend keeping this processor code separate from your meeting data:
+### Four Ways to Run
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         How do you want to process?                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   MANUAL                          AUTOMATED                                 │
+│   ──────                          ─────────                                 │
+│                                                                             │
+│   ┌─────────────┐                 ┌─────────────────────────────────────┐   │
+│   │   Manual    │                 │        meetingnotesd daemon         │   │
+│   │             │                 │   (receives webhooks from MacWhisper│   │
+│   │ Drop files  │                 │    or other automation tools)       │   │
+│   │ in inbox/,  │                 ├──────────────────┬──────────────────┤   │
+│   │ run script  │                 │   Standalone     │      Relay       │   │
+│   └─────────────┘                 │   (local AI)     │   (cloud AI)     │   │
+│                                   └──────────────────┴──────────────────┘   │
+│         │                                   │                  │            │
+│         ▼                                   ▼                  ▼            │
+│   ┌───────────┐                      ┌───────────┐      ┌───────────┐      │
+│   │  Local    │                      │  Local    │      │  GitHub   │      │
+│   │Processing │                      │Processing │      │  Actions  │      │
+│   └───────────┘                      └───────────┘      └───────────┘      │
+│                                                                             │
+│   Also: GitHub Actions on push (no daemon, cloud processing)                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Mode | Trigger | Processing | Best For |
+|------|---------|------------|----------|
+| **Manual** | Run `run_summarization.py` | Local | Occasional use, full control |
+| **GitHub Actions (push)** | `git push` to inbox/ | Cloud | Set-and-forget, no daemon |
+| **Daemon: Standalone** | Webhook (e.g., MacWhisper) | Local | Real-time, privacy, offline |
+| **Daemon: Relay** | Webhook → workflow_dispatch | Cloud | Real-time + cloud power |
+
+---
+
+## Choosing Your Setup
+
+**Start here based on your needs:**
+
+**"I just want to try it out"**
+→ Use [Manual Processing](#manual-processing). Drop a file in `inbox/`, run the script.
+
+**"I want hands-off processing when I push transcripts to GitHub"**
+→ Use [GitHub Actions (push-based)](#push-based-trigger-no-daemon). No daemon needed—just push files and GitHub does the rest.
+
+**"I use MacWhisper and want transcripts processed automatically"**
+→ Use the [meetingnotesd daemon](#automated-processing-with-meetingnotesd). Choose between:
+  - **Standalone mode**: Everything runs on your Mac. Simpler setup, works offline.
+  - **Relay mode**: Your Mac receives webhooks, but processing happens in GitHub Actions. Better for slower machines or when you want cloud audit trails.
+
+**"I'm on a team sharing meeting notes"**
+→ Use GitHub Actions (either push-based or relay). Everyone commits to the same data repo; processing happens in the cloud with full history.
+
+---
+
+## Architecture
+
+We recommend keeping this processor code separate from your meeting data:
 
 ```
 ~/projects/
