@@ -99,7 +99,7 @@ def ensure_unique_filename(directory, base_name, extension):
             return filepath
         counter += 1
 
-def process_transcript(input_file, paths, target='copilot', model=None, prompt_template=None):
+def process_transcript(input_file, paths, target='copilot', model=None, prompt_template=None, debug=False):
     """Process a single transcript: summarize, extract slug, and organize files."""
     print(f"\nProcessing: {input_file}")
     
@@ -126,10 +126,34 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             '--model', model_name
         ]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, cwd=workspace_dir)
-            if result.returncode != 0:
-                print(f"  Error in summarization: {result.stderr}")
-                return False, None, None
+            if debug:
+                print(f"  Running: {' '.join(command[:4])} '<prompt>' {' '.join(command[5:])}")
+                print(f"  Working directory: {os.path.abspath(workspace_dir)}")
+                print(f"  Prompt length: {len(final_prompt)} chars")
+                print(f"  {'='*50}")
+                print(f"  COPILOT OUTPUT:")
+                print(f"  {'='*50}")
+                # Stream output for debugging
+                process = subprocess.Popen(
+                    command,
+                    cwd=workspace_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1
+                )
+                for line in process.stdout:
+                    print(f"  {line}", end='', flush=True)
+                process.wait()
+                print(f"  {'='*50}")
+                print(f"  Exit code: {process.returncode}")
+                if process.returncode != 0:
+                    return False, None, None
+            else:
+                result = subprocess.run(command, capture_output=True, text=True, cwd=workspace_dir)
+                if result.returncode != 0:
+                    print(f"  Error in summarization: {result.stderr}")
+                    return False, None, None
         except Exception as e:
             print(f"  Error running copilot: {e}")
             return False, None, None
@@ -142,12 +166,40 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
             '--model', model_name
         ]
         try:
-            result = subprocess.run(command, input=final_prompt, capture_output=True, text=True, cwd=workspace_dir)
-            if result.returncode != 0:
-                print(f"  Error in summarization: {result.stderr}")
-                return False, None, None
+            if debug:
+                print(f"  Running: {' '.join(command)}")
+                print(f"  Working directory: {os.path.abspath(workspace_dir)}")
+                print(f"  Prompt length: {len(final_prompt)} chars")
+                print(f"  {'='*50}")
+                print(f"  GEMINI OUTPUT:")
+                print(f"  {'='*50}")
+                # Stream output for debugging
+                process = subprocess.Popen(
+                    command,
+                    cwd=workspace_dir,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1
+                )
+                process.stdin.write(final_prompt)
+                process.stdin.close()
+                for line in process.stdout:
+                    print(f"  {line}", end='', flush=True)
+                process.wait()
+                print(f"  {'='*50}")
+                print(f"  Exit code: {process.returncode}")
+                if process.returncode != 0:
+                    return False, None, None
+            else:
+                result = subprocess.run(command, input=final_prompt, capture_output=True, text=True, cwd=workspace_dir)
+                if result.returncode != 0:
+                    print(f"  Error in summarization: {result.stderr}")
+                    return False, None, None
         except Exception as e:
             print(f"  Error running gemini: {e}")
+            return False, None, None
             return False, None, None
     
     # Check if org file was created (in workspace)
@@ -229,7 +281,7 @@ def git_commit_changes(inbox_files, transcript_files, org_files, workspace_dir):
         print(f"  Error during git operations: {e}")
         return False
 
-def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_template=None):
+def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_template=None, debug=False):
     """Process all transcript files in the inbox directory."""
     inbox_dir = paths['inbox']
     
@@ -260,7 +312,7 @@ def process_inbox(paths, target='copilot', model=None, use_git=False, prompt_tem
     
     for transcript_file in transcript_files:
         try:
-            result = process_transcript(transcript_file, paths, target, model, prompt_template)
+            result = process_transcript(transcript_file, paths, target, model, prompt_template, debug)
             if result[0]:  # Success
                 successful += 1
                 processed_inbox_files.append(transcript_file)
@@ -300,6 +352,8 @@ def run_summarization():
                         help='Path to the prompt template file. Default: prompt.txt in workspace, or script directory as fallback.')
     parser.add_argument('--git', action='store_true',
                         help='Perform git operations: rm processed inbox files, add new files, and commit. For use in automation/CI.')
+    parser.add_argument('--debug', action='store_true',
+                        help='Stream AI output to terminal for debugging. Useful when processing hangs.')
     
     args = parser.parse_args()
     
@@ -317,7 +371,7 @@ def run_summarization():
             print(f"Created {dir_path}/ directory")
     
     # Process all transcripts in inbox
-    process_inbox(paths, target=args.target, model=args.model, use_git=args.git, prompt_template=prompt_template)
+    process_inbox(paths, target=args.target, model=args.model, use_git=args.git, prompt_template=prompt_template, debug=args.debug)
 
 if __name__ == "__main__":
     run_summarization()
