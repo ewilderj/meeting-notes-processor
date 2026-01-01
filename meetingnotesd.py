@@ -311,8 +311,8 @@ class RepoAgent:
             return False, f"workflow dispatch failed ({resp.status_code}): {resp.text.strip()}"
         return True, "workflow dispatch triggered"
 
-    def git_commit_and_push(self, filepath: str, title: str) -> tuple[bool, str]:
-        """Commit and (optionally) push the file to the data repository."""
+    def git_commit(self, filepath: str, title: str) -> tuple[bool, str]:
+        """Commit a file to the data repository (no push)."""
         repo_path = self._repo_path()
         file_abs_path = Path(filepath).resolve()
         try:
@@ -333,8 +333,12 @@ class RepoAgent:
             return False, f"Git commit failed: {result.stderr.strip()}"
         logger.info(f"Git committed: {commit_message}")
 
+        return True, "Committed to repository"
+
+    def git_push(self) -> tuple[bool, str]:
+        """Push commits to remote repository."""
         if not self.git_auto_push:
-            return True, "Committed to repository (push disabled)"
+            return True, "Push disabled in config"
 
         # Pull before push to avoid conflicts. Prefer ff-only semantics.
         changed, message = self.sync_repo()
@@ -350,7 +354,7 @@ class RepoAgent:
             return False, f"Git push failed: {result.stderr.strip()}"
 
         logger.info(f"Git pushed to {self.git_remote}/{self.git_branch}")
-        return True, "Committed and pushed to repository"
+        return True, f"Pushed to {self.git_remote}/{self.git_branch}"
 
     def start_background_sync(self) -> None:
         if not self.sync_enabled or self.sync_poll_interval_seconds <= 0:
@@ -556,36 +560,72 @@ def webhook():
                 if agent.sync_enabled:
                     agent.ensure_repo_checkout()
 
-                success, git_message = agent.git_commit_and_push(filepath, title)
+                commit_ok, commit_msg = agent.git_commit(filepath, title)
                 response_data['git'] = {
                     'enabled': True,
-                    'success': success,
-                    'message': git_message
+                    'committed': commit_ok,
+                    'message': commit_msg
                 }
 
-                if not success:
+                if not commit_ok:
                     # File was saved but git failed - still return success with warning
-                    response_data['warning'] = 'File saved but git operation failed'
-                    logger.warning(f"Git operation failed but file was saved: {git_message}")
+                    response_data['warning'] = 'File saved but git commit failed'
+                    logger.warning(f"Git commit failed but file was saved: {commit_msg}")
                 else:
                     # Choose processing mode: standalone (local) or relay (workflow dispatch)
                     if agent.standalone_enabled:
+                        # Standalone mode: process locally, then push everything together
                         proc_ok, proc_msg = agent.run_standalone_processing()
                         response_data['processing'] = {
                             'mode': 'standalone',
                             'success': proc_ok,
                             'message': proc_msg,
                         }
+                        # Push all commits (inbox + processing results) together
+                        if proc_ok and agent.git_auto_push:
+                            push_ok, push_msg = agent.git_push()
+                            response_data['git']['pushed'] = push_ok
+                            response_data['git']['push_message'] = push_msg
+                            if not push_ok:
+                                logger.warning(f"Push after standalone processing failed: {push_msg}")
                     else:
-                        dispatch_ok, dispatch_msg = agent.maybe_dispatch_workflow(reason=f"webhook:{filename}")
-                        response_data['processing'] = {
-                            'mode': 'relay',
-                            'workflow_dispatch': {
-                                'enabled': agent.workflow_dispatch_enabled,
-                                'success': dispatch_ok,
-                                'message': dispatch_msg,
+                        # Relay mode: push immediately so GitHub Actions can access the file
+                        if agent.git_auto_push:
+                            push_ok, push_msg = agent.git_push()
+                            response_data['git']['pushed'] = push_ok
+                            response_data['git']['push_message'] = push_msg
+                            if not push_ok:
+                                logger.warning(f"Push failed: {push_msg}")
+                                # Don't dispatch workflow if push failed
+                                response_data['processing'] = {
+                                    'mode': 'relay',
+                                    'workflow_dispatch': {
+                                        'enabled': agent.workflow_dispatch_enabled,
+                                        'success': False,
+                                        'message': 'Skipped: push failed',
+                                    }
+                                }
+                            else:
+                                dispatch_ok, dispatch_msg = agent.maybe_dispatch_workflow(reason=f"webhook:{filename}")
+                                response_data['processing'] = {
+                                    'mode': 'relay',
+                                    'workflow_dispatch': {
+                                        'enabled': agent.workflow_dispatch_enabled,
+                                        'success': dispatch_ok,
+                                        'message': dispatch_msg,
+                                    }
+                                }
+                        else:
+                            # Push disabled, just dispatch (workflow may not find the file)
+                            dispatch_ok, dispatch_msg = agent.maybe_dispatch_workflow(reason=f"webhook:{filename}")
+                            response_data['processing'] = {
+                                'mode': 'relay',
+                                'workflow_dispatch': {
+                                    'enabled': agent.workflow_dispatch_enabled,
+                                    'success': dispatch_ok,
+                                    'message': dispatch_msg,
+                                }
                             }
-                        }
             else:
                 response_data['git'] = {
                     'enabled': False,

@@ -552,6 +552,11 @@ uv run send_transcript.py transcript.txt http://localhost:9876/webhook
 
 ## Troubleshooting
 
+**Processing hangs indefinitely with copilot**
+- Run `npm install` in the processor directory first
+- `npx` may prompt to install packages, which hangs when stdin is captured
+- Use `--debug` flag to stream output and see what's happening
+
 **Wrong paths or "directory not found"**
 - For separated repos, use `--workspace ../my-meeting-notes` to point to your data repo
 - Paths in `config.yaml` are relative to the processor directory
