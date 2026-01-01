@@ -83,9 +83,8 @@ jobs:
         if: steps.check_inbox.outputs.skip != 'true'
         run: |
           cd processor
-          uv run run_summarization.py --git
+          uv run run_summarization.py --workspace ../meeting-notes --git
         env:
-          WORKSPACE_DIR: ../meeting-notes
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Push changes

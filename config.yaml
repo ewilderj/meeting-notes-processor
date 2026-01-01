@@ -13,7 +13,7 @@ server:
 
 # Directory Settings
 # Path to the data repository (meeting-notes)
-data_repo: ../meeting-notes2
+data_repo: ../meeting-notes
 
 # Git Settings
 git:

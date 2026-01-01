@@ -162,7 +162,7 @@ The simplest way to use this tool: drop transcripts in `inbox/`, run the script.
 cp meeting-recording.txt ../my-meeting-notes/inbox/
 
 # Process it
-WORKSPACE_DIR=../my-meeting-notes uv run run_summarization.py
+uv run run_summarization.py --workspace ../my-meeting-notes
 ```
 
 Results appear in your data repo:
@@ -174,6 +174,7 @@ Results appear in your data repo:
 ```bash
 uv run run_summarization.py [OPTIONS]
 
+--workspace PATH    # Path to data repo (default: current directory)
 --target copilot    # Use GitHub Copilot CLI (default)
 --target gemini     # Use Google Gemini CLI
 --model MODEL       # Specific model (e.g., claude-opus-4.5, gpt-5.2, gemini-2.0-flash-exp)
@@ -185,7 +186,7 @@ uv run run_summarization.py [OPTIONS]
 
 The AI summarization prompt is stored in `prompt.txt`. The script looks for it in this order:
 
-1. **Workspace directory** (`WORKSPACE_DIR/prompt.txt`) — allows per-data-repo customization
+1. **Workspace directory** (`<workspace>/prompt.txt`) — allows per-data-repo customization
 2. **Processor directory** (`prompt.txt` alongside the script) — shared default
 
 Edit the prompt to customize:
@@ -511,11 +512,13 @@ Discussion covered three main areas...
 ### run_summarization.py
 
 ```bash
-WORKSPACE_DIR=../data-repo uv run run_summarization.py [OPTIONS]
+uv run run_summarization.py [OPTIONS]
 
 Options:
+  --workspace PATH          Path to data repo (default: current directory)
   --target copilot|gemini   AI backend (default: copilot)
   --model MODEL             Specific model name
+  --prompt FILE             Custom prompt template
   --git                     Commit results to git
 ```
 
@@ -543,8 +546,8 @@ uv run send_transcript.py transcript.txt http://localhost:9876/webhook
 
 ## Troubleshooting
 
-**"WORKSPACE_DIR not set" or wrong paths**
-- For separated repos, always set `WORKSPACE_DIR` to point to your data repo
+**Wrong paths or "directory not found"**
+- For separated repos, use `--workspace ../my-meeting-notes` to point to your data repo
 - Paths in `config.yaml` are relative to the processor directory
 
 **Git push failing**

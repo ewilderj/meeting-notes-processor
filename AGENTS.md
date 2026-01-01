@@ -12,7 +12,7 @@ This project supports **two deployment models**:
 When working with separated repositories:
 - **Processor repo** contains: scripts, config, workflows
 - **Data repo** contains: inbox/, transcripts/, notes/
-- Scripts use `WORKSPACE_DIR` environment variable to locate data repo
+- Use `--workspace` argument to specify data repo location
 
 ## Python Environment Management
 
@@ -28,7 +28,7 @@ uv run meetingnotesd.py
 uv run run_summarization.py
 
 # Separated-repository setup (from processor repo)
-WORKSPACE_DIR=../meeting-notes uv run run_summarization.py
+uv run run_summarization.py --workspace ../meeting-notes
 
 # Run as background daemon
 uv run meetingnotesd.py &
@@ -73,8 +73,8 @@ uv pip install --system package-name
 - **Test webhook**: `curl -X POST http://localhost:9876/webhook -H "Content-Type: application/json" -d '{"title": "Test", "transcript": "Content"}'`
 
 **Separated-repository setup:**
-- **Run the summarization**: `WORKSPACE_DIR=../meeting-notes uv run run_summarization.py`
-- **Run webhook daemon**: Configure `config.yaml` with paths to data repo, then `uv run meetingnotesd.py`
+- **Run the summarization**: `uv run run_summarization.py --workspace ../meeting-notes`
+- **Run webhook daemon**: Configure `config.yaml` with `data_repo` path, then `uv run meetingnotesd.py`
 - **GitHub Actions**: Uses workflow from `.github/workflows/process-transcripts.yml` (copy from `workflows-templates/process-transcripts-data-repo.yml`)
 
 ## Configuration
@@ -83,16 +83,12 @@ uv pip install --system package-name
 
 For **same-repository** setup:
 ```yaml
-directories:
-  inbox: inbox
-  repository: .
+data_repo: .
 ```
 
 For **separated-repository** setup:
 ```yaml
-directories:
-  inbox: ../meeting-notes/inbox
-  repository: ../meeting-notes
+data_repo: ../meeting-notes
 
 git:
   repository_url: "github.com/ewilderj/meeting-notes.git"
@@ -100,16 +96,16 @@ git:
 
 ### Processing Script (run_summarization.py)
 
-Supports `WORKSPACE_DIR` environment variable:
-- If not set: Uses current directory (same-repository mode)
-- If set: Uses specified path to data repository
+Supports `--workspace` argument (or `WORKSPACE_DIR` env var as fallback):
+- If not specified: Uses current directory (same-repository mode)
+- If specified: Uses that path as data repository
 
 ## Development Workflow
 
 1. Make changes to Python files
 2. Add inline script metadata for any new dependencies
 3. Test with `uv run <script>`
-4. For separated repos: Test with `WORKSPACE_DIR=../meeting-notes uv run <script>`
+4. For separated repos: Test with `uv run run_summarization.py --workspace ../meeting-notes`
 5. Commit and push changes
 
 ## GitHub Actions
@@ -121,7 +117,7 @@ Use existing `.github/workflows/process-transcripts.yml`
 Use `workflows-templates/process-transcripts-data-repo.yml` (copy to `.github/workflows/process-transcripts.yml` in the data repo):
 - Workflow lives in **data repo**
 - Checks out both data and processor repos
-- Runs processor with `WORKSPACE_DIR` pointing to data repo
+- Runs processor with `--workspace` pointing to data repo
 - Commits results back to data repo
 
 ## Notes
@@ -130,4 +126,4 @@ Use `workflows-templates/process-transcripts-data-repo.yml` (copy to `.github/wo
 - Always prefix Python commands with `uv run`
 - Use inline script metadata (PEP 723) for dependencies
 - `uv` handles virtual environments automatically
-- For separated repos, always set `WORKSPACE_DIR` when running processor scripts
+- For separated repos, use `--workspace` argument for run_summarization.py

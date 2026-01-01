@@ -8,7 +8,7 @@ Adding support for other AI backends (OpenAI API, Anthropic API, local models, e
 
 ## Environment Variables
 
-- `WORKSPACE_DIR` - Path to data repository (for separated repos setup)
+- `WORKSPACE_DIR` - Fallback for `--workspace` argument (for separated repos setup)
 - `GH_TOKEN` - GitHub personal access token for:
   - Git push operations (daemon and Actions)
   - Workflow dispatch triggering (relay mode)
@@ -17,22 +17,7 @@ Adding support for other AI backends (OpenAI API, Anthropic API, local models, e
 
 ## Single Repository Setup
 
-If you prefer to keep code and data together (simpler but mixes histories):
-
-1. **Clone this repository**
-   ```bash
-   git clone https://github.com/ewilderj/meeting-notes-processor.git my-meeting-notes
-   cd my-meeting-notes
-   npm install
-   ```
-
-2. **Process transcripts directly**
-   ```bash
-   cp transcript.txt inbox/
-   uv run run_summarization.py
-   ```
-
-No `WORKSPACE_DIR` needed—everything runs in the current directory.
+If you prefer to keep code and data together, just don't use `--workspace`—the script will use the current directory for `inbox/`, `transcripts/`, and `notes/`.
 
 ## GitHub Actions Authentication
 
