@@ -386,6 +386,20 @@ For production use, run the daemon as a proper system service so it starts autom
 
 See [service-configs/README.md](service-configs/README.md) for detailed setup instructions.
 
+#### Git Repository Setup for the Daemon
+
+When running the daemon (especially as a system service), it needs to push changes without interactive authentication. **HTTPS remotes with embedded tokens** work more reliably than SSH:
+
+```bash
+# Check your current remote
+git remote -v
+
+# If using SSH (git@github.com:...), switch to HTTPS with token:
+git remote set-url origin https://YOUR_TOKEN@github.com/username/repo.git
+```
+
+This avoids SSH key passphrase prompts and agent issues that can cause the daemon to hang.
+
 ### Testing the Daemon
 
 ```bash

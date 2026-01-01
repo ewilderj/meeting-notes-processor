@@ -249,7 +249,6 @@ class RepoAgent:
         # Set WORKSPACE_DIR to point to the data repo
         env = os.environ.copy()
         env['WORKSPACE_DIR'] = str(self._repo_path())
-        env['PYTHONUNBUFFERED'] = '1'  # Ensure output isn't buffered
 
         args = shlex.split(self.standalone_command)
         logger.info(f"Running standalone processing: {args} (cwd={working_dir}, WORKSPACE_DIR={env['WORKSPACE_DIR']})")

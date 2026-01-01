@@ -101,6 +101,18 @@ Both service configs need these environment variables:
 | `GH_TOKEN` | Yes (for git push) | GitHub personal access token |
 | `WEBHOOK_CONFIG` | No | Path to config.yaml (defaults to ./config.yaml) |
 
+## Node.js Version (nvm users)
+
+Systemd doesn't source `.bashrc`, so nvm-managed Node.js isn't available by default. The service will use the system Node (often too old for Copilot CLI).
+
+**Fix:** Add your nvm node path to the systemd `PATH` environment:
+
+```ini
+Environment="PATH=/home/USER/.nvm/versions/node/vXX.X.X/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin"
+```
+
+Find your node path with `which node`.
+
 ## Git Authentication Setup
 
 The `GH_TOKEN` environment variable is used by the GitHub API (for workflow_dispatch), but **git itself** needs separate configuration to use the token for push/pull operations.
