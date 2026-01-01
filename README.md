@@ -4,6 +4,8 @@ Automatically transform meeting transcripts into organized, searchable org-mode 
 
 Drop a transcript in, get structured summaries with action items, participants, and smart categorization.
 
+Read my blog post for the [story of how this came to be](https://wilder-james.com/blog/meeting-notes/).
+
 ## Table of Contents
 
 - [Overview](#overview)
