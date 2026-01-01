@@ -10,7 +10,7 @@
         <!-- Path to uv - find with: which uv -->
         <string>/Users/CHANGEME/.local/bin/uv</string>
         <string>run</string>
-        <string>webhook_daemon.py</string>
+        <string>meetingnotesd.py</string>
     </array>
 
     <key>WorkingDirectory</key>

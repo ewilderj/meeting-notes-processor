@@ -14,7 +14,7 @@ WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
 
 # CHANGEME: Path to uv (find with: which uv)
 # CHANGEME: Set your GitHub token
-ExecStart=/home/CHANGEME/.local/bin/uv run webhook_daemon.py
+ExecStart=/home/CHANGEME/.local/bin/uv run meetingnotesd.py
 Environment="GH_TOKEN=ghp_CHANGEME"
 
 # Optional: load secrets from a separate file instead of embedding in this unit
