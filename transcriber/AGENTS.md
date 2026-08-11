@@ -175,10 +175,10 @@ Simple: check for `CptHost` subprocess via `pgrep -xq CptHost`.
 Teams 2.x (new Electron) exposes no reliable window titles and
 `AVCaptureDevice` cannot see its mic usage. Detection uses two tiers:
 
-- **Start detection**: MSTeams process running AND physical mic has active
-  CoreAudio I/O (checked via compiled `mic_active` helper). The Swift helper
-  filters virtual devices (BlackHole, ZoomAudioDevice, etc.) to avoid false
-  positives.
+- **Start detection**: native Teams process tree running (`MSTeams` or Teams
+  2.x WebView/helper processes) AND recent `audiomxd` recording evidence.
+  Do not require an exact `MSTeams` binary; current Teams 2.x can expose only
+  `com.microsoft.teams2.*` and `Microsoft Teams WebView` helpers.
 
 - **End detection**: Cannot use mic state because our own VBAN sender keeps the
   mic active during recording. Instead queries macOS `audiomxd` system log for

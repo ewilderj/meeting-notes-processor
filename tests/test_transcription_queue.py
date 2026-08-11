@@ -126,6 +126,22 @@ def test_build_whisper_command_includes_resource_controls(tmp_path, monkeypatch)
     assert "--tinydiarize" in cmd
 
 
+def test_build_whisper_command_uses_taskpolicy_fallback_path(tmp_path, monkeypatch):
+    """launchd PATH may omit /usr/sbin, where macOS provides taskpolicy."""
+    monkeypatch.setattr(transcriber, "WHISPER_CLI", "/tmp/whisper-cli")
+    monkeypatch.setattr(transcriber, "WHISPER_MODEL", "/tmp/ggml-small.en-tdrz.bin")
+    monkeypatch.setattr(transcriber, "WHISPER_THREADS", None)
+    monkeypatch.setattr(transcriber, "WHISPER_NICE", None)
+    monkeypatch.setattr(transcriber, "WHISPER_TASKPOLICY_BACKGROUND", True)
+    monkeypatch.setattr(transcriber.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(transcriber.Path, "exists", lambda self: str(self) == "/usr/sbin/taskpolicy")
+
+    cmd = transcriber._build_whisper_command(tmp_path / "meeting.wav")
+
+    assert cmd[:2] == ["/usr/sbin/taskpolicy", "-b"]
+    assert cmd[2] == "/tmp/whisper-cli"
+
+
 @pytest.mark.asyncio
 async def test_wait_for_transcription_slot_defers_while_recording(monkeypatch):
     """Local mode should not start Whisper while a new recording is active."""

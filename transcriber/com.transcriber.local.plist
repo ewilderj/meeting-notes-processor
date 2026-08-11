@@ -18,9 +18,9 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin</string>
         <key>WEBHOOK_URL</key>
-        <string>http://nuctu:9876/webhook</string>
+        <string>http://127.0.0.1:9876/webhook</string>
         <key>TRANSCRIBER_HOST</key>
         <string>127.0.0.1</string>
         <key>TRANSCRIBER_PORT</key>

@@ -190,6 +190,17 @@ def _disk_free_gb() -> float:
     return (stat.f_bavail * stat.f_frsize) / (1024**3)
 
 
+def _find_executable(name: str, fallback_paths: tuple[str, ...] = ()) -> str | None:
+    """Find an executable, including launchd-safe absolute fallback paths."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for fallback_path in fallback_paths:
+        if Path(fallback_path).exists():
+            return fallback_path
+    return None
+
+
 def _build_whisper_command(audio_path: Path) -> list[str]:
     """Build the whisper.cpp command, including optional resource controls."""
     cmd = [
@@ -208,14 +219,14 @@ def _build_whisper_command(audio_path: Path) -> list[str]:
 
     prefix: list[str] = []
     if WHISPER_TASKPOLICY_BACKGROUND:
-        taskpolicy = shutil.which("taskpolicy")
+        taskpolicy = _find_executable("taskpolicy", ("/usr/sbin/taskpolicy",))
         if taskpolicy:
             prefix.extend([taskpolicy, "-b"])
         else:
             logger.warning("WHISPER_TASKPOLICY_BACKGROUND requested, but taskpolicy was not found")
 
     if WHISPER_NICE is not None:
-        nice = shutil.which("nice")
+        nice = _find_executable("nice", ("/usr/bin/nice",))
         if nice:
             prefix.extend([nice, "-n", str(WHISPER_NICE)])
         else:

@@ -22,8 +22,7 @@ Meeting detection:
   - Zoom: checks for CptHost subprocess (reliable in-meeting indicator)
   - Teams (native app): two-tier detection because new Teams 2.x exposes no window
     titles and AVCaptureDevice doesn't see its mic usage:
-    * Start: MSTeams process running + physical mic has active CoreAudio I/O
-      (via compiled mic_active helper)
+    * Start: Teams process tree running + audiomxd recording evidence
     * End: queries macOS audiomxd log for Teams audio session state, since
       our own VBAN sender keeps the mic active during recording
   - Teams PWA (Edge): queries audiomxd log for Edge helper audio sessions
@@ -214,7 +213,7 @@ def _physical_mic_active() -> bool:
 def detect_teams_meeting() -> bool:
     """Check if Teams is in an active call (for START detection).
 
-    Uses audiomxd to check if MSTeams itself has an active recording session,
+    Uses audiomxd to check if native Teams has an active recording session,
     rather than checking if any physical mic is active.  This correctly
     ignores other apps that open the mic (e.g. Handy dictation, audio
     recorders) while MSTeams is running but idle.
@@ -224,15 +223,12 @@ def detect_teams_meeting() -> bool:
     _teams_audio_session_active() (which uses the conservative True default).
     """
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", "MSTeams"], capture_output=True, timeout=3,
-        )
-        if result.returncode != 0:
+        if not _teams_process_running():
             return False
-        # Check if MSTeams specifically has an active recording session.
+        # Check if native Teams specifically has an active recording session.
         # default_if_no_entries=False: absence of recent evidence means idle.
-        # audiomxd logs Teams as "Microsoft Teams" (the binary is "MSTeams",
-        # but that name does not appear in audiomxd log messages).
+        # audiomxd logs Teams as "Microsoft Teams" regardless of whether the
+        # process tree is legacy MSTeams or newer com.microsoft.teams2 helpers.
         return _audiomxd_session_active(
             "Microsoft Teams",
             default_if_no_entries=False,
@@ -240,6 +236,20 @@ def detect_teams_meeting() -> bool:
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
+
+
+def _teams_process_running() -> bool:
+    """Return True when either legacy MSTeams or Teams 2.x helpers are alive."""
+    probes = [
+        ["pgrep", "-x", "MSTeams"],
+        ["pgrep", "-f", r"/Microsoft Teams\.app/.*com\.microsoft\.teams2"],
+        ["pgrep", "-f", r"/Microsoft Teams\.app/.*Microsoft Teams WebView"],
+    ]
+    for probe in probes:
+        result = subprocess.run(probe, capture_output=True, timeout=3)
+        if result.returncode == 0:
+            return True
+    return False
 
 
 _AUDIOMXD_SESSION_RE = re.compile(
@@ -347,10 +357,7 @@ def _teams_audio_session_active() -> bool:
 def _teams_audio_session_recently_active(window_seconds: int) -> bool:
     """Check recent native Teams audio state for manual-start recovery."""
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", "MSTeams"], capture_output=True, timeout=3,
-        )
-        if result.returncode != 0:
+        if not _teams_process_running():
             return False
     except (subprocess.TimeoutExpired, OSError):
         return False

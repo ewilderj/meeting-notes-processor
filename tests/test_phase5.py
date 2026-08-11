@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -255,6 +256,78 @@ class TestHookExecution:
             
             assert success is False
             assert "failed" in message.lower()
+
+
+class TestStandaloneProcessing:
+    """Tests for local standalone processing mode."""
+
+    def test_standalone_processing_sets_workspace_and_cwd(self, minimal_config, temp_workspace):
+        """Standalone processing runs in the configured cwd with WORKSPACE_DIR pointing at the data repo."""
+        import meetingnotesd
+
+        processor_dir = temp_workspace["workspace"] / "processor"
+        processor_dir.mkdir()
+        marker = temp_workspace["workspace"] / "standalone-marker.txt"
+
+        minimal_config["sync"]["enabled"] = False
+        minimal_config["processing"] = {
+            "standalone": {
+                "enabled": True,
+                "command": (
+                    f"{sys.executable} -c "
+                    "\"import os,pathlib,sys; "
+                    "pathlib.Path(sys.argv[1]).write_text(os.environ['WORKSPACE_DIR'] + chr(10) + os.getcwd())\" "
+                    f"{marker}"
+                ),
+                "working_directory": str(processor_dir),
+                "timeout_seconds": 10,
+                "async": False,
+            }
+        }
+
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        success, message = agent.run_standalone_processing()
+
+        assert success is True
+        assert "completed" in message.lower()
+        workspace_dir, cwd = marker.read_text().splitlines()
+        assert workspace_dir == str(temp_workspace["data_repo"].resolve())
+        assert Path(cwd).resolve() == processor_dir.resolve()
+
+    def test_standalone_processing_disabled_returns_early(self, repo_agent):
+        """When standalone mode is disabled, processing is not run."""
+        success, message = repo_agent.run_standalone_processing()
+
+        assert success is False
+        assert "disabled" in message.lower()
+
+    def test_async_standalone_processing_coalesces_concurrent_runs(self, minimal_config, temp_workspace):
+        """A second async trigger skips while processing is already active."""
+        import meetingnotesd
+
+        minimal_config["sync"]["enabled"] = False
+        minimal_config["processing"] = {
+            "standalone": {
+                "enabled": True,
+                "command": "unused",
+                "async": True,
+            }
+        }
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        calls = []
+
+        def fake_processing():
+            calls.append("run")
+            time.sleep(0.2)
+            return True, "ok"
+
+        agent.run_standalone_processing = fake_processing
+
+        agent.run_standalone_processing_async()
+        agent.run_standalone_processing_async()
+        agent._processing_thread.join(timeout=2)
+
+        assert calls == ["run"]
 
 
 class TestWorkflowDispatch:
