@@ -63,6 +63,9 @@ POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
 # Default 3 = 15 seconds of sustained detection, which filters out transient
 # mic probes (Teams/Edge connectivity checks, PWA startup, etc.).
 CONFIRM_POLLS = int(os.getenv("MEETING_CONFIRM_POLLS", "3"))
+MANUAL_START_AUDIO_LOOKBACK_SECONDS = int(
+    os.getenv("MANUAL_START_AUDIO_LOOKBACK_SECONDS", "600")
+)
 
 # Calendar org file for meeting title lookup (optional)
 CALENDAR_ORG = os.getenv("MEETING_CALENDAR_ORG", os.path.expanduser("~/gtd/outlook.org"))
@@ -245,13 +248,14 @@ _AUDIOMXD_SESSION_RE = re.compile(
 _AUDIOMXD_WINDOW_SECONDS = 120
 _AUDIOMXD_END_QUERY_TTL_SECONDS = float(os.getenv("AUDIOMXD_END_QUERY_TTL_SECONDS", "15"))
 _AUDIOMXD_SESSION_STATES: dict[str, dict[str, bool]] = {}
-_AUDIOMXD_QUERY_CACHE: dict[str, tuple[float, dict[str, bool]]] = {}
+_AUDIOMXD_QUERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, bool]]] = {}
 
 
 def _audiomxd_session_active(
     app_name: str,
     default_if_no_entries: bool = True,
     use_cached_sessions: bool = True,
+    window_seconds: int | None = None,
 ) -> bool:
     """Check if an app has an active audio session via macOS audiomxd logs.
 
@@ -294,15 +298,17 @@ def _audiomxd_session_active(
             Use False for START detection to avoid stale positives from older
             calls; use True for END detection to bridge quiet log windows.
     """
+    log_window_seconds = window_seconds or _AUDIOMXD_WINDOW_SECONDS
     query_ttl = _AUDIOMXD_END_QUERY_TTL_SECONDS if use_cached_sessions else 0
     now = time.monotonic()
-    cached_query = _AUDIOMXD_QUERY_CACHE.get(app_name)
+    cache_key = (app_name, log_window_seconds)
+    cached_query = _AUDIOMXD_QUERY_CACHE.get(cache_key)
     if cached_query is not None and query_ttl > 0 and now - cached_query[0] < query_ttl:
         session_states = cached_query[1]
     else:
         try:
             result = subprocess.run(
-                ["log", "show", "--last", f"{_AUDIOMXD_WINDOW_SECONDS}s",
+                ["log", "show", "--last", f"{log_window_seconds}s",
                  "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
                  "--style", "compact"],
                 capture_output=True, text=True, timeout=15,
@@ -317,7 +323,7 @@ def _audiomxd_session_active(
             m = _AUDIOMXD_SESSION_RE.search(line)
             if m:
                 session_states[m.group(1).lower()] = (m.group(2) == "true")
-        _AUDIOMXD_QUERY_CACHE[app_name] = (now, session_states)
+        _AUDIOMXD_QUERY_CACHE[cache_key] = (now, session_states)
 
     if not session_states:
         cached = _AUDIOMXD_SESSION_STATES.get(app_name, {})
@@ -336,6 +342,42 @@ def _audiomxd_session_active(
 def _teams_audio_session_active() -> bool:
     """Check if native Teams has an active audio session."""
     return _audiomxd_session_active("Microsoft Teams")
+
+
+def _teams_audio_session_recently_active(window_seconds: int) -> bool:
+    """Check recent native Teams audio state for manual-start recovery."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "MSTeams"], capture_output=True, timeout=3,
+        )
+        if result.returncode != 0:
+            return False
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+    return _audiomxd_session_active(
+        "Microsoft Teams",
+        default_if_no_entries=False,
+        use_cached_sessions=False,
+        window_seconds=window_seconds,
+    )
+
+
+def infer_manual_start_app() -> str:
+    """Infer which app should own auto-stop for a user-initiated recording."""
+    meeting_app = detect_meeting()
+    if meeting_app:
+        return meeting_app
+    if _teams_audio_session_recently_active(MANUAL_START_AUDIO_LOOKBACK_SECONDS):
+        return "Teams"
+    if _audiomxd_session_active(
+        "Microsoft Edge",
+        default_if_no_entries=False,
+        use_cached_sessions=False,
+        window_seconds=MANUAL_START_AUDIO_LOOKBACK_SECONDS,
+    ):
+        return "EdgeTeams"
+    return "Manual"
 
 
 def detect_edge_teams_meeting() -> bool:
@@ -796,7 +838,7 @@ class MeetingBarApp(rumps.App):
 
     def _do_stop(self):
         with self._lock:
-            if not self._recording:
+            if not self._recording or self._busy:
                 return
             self._busy = True
 
@@ -825,6 +867,9 @@ class MeetingBarApp(rumps.App):
             with self._lock:
                 self._recording = False
                 self._recording_title = None
+                self._recording_app = None
+                self._recording_auto = False
+                self._started_at = None
         finally:
             with self._lock:
                 self._busy = False
@@ -843,6 +888,8 @@ class MeetingBarApp(rumps.App):
                     logger.info("Already recording or busy")
                     return
 
+            app = infer_manual_start_app()
+            auto_stop = app != "Manual"
             cal_title = lookup_calendar_title()
             if cal_title:
                 title = cal_title
@@ -850,9 +897,11 @@ class MeetingBarApp(rumps.App):
             else:
                 title = f"Meeting at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
                 logger.info(f"Manual start: '{title}'")
+            if auto_stop:
+                logger.info(f"Manual recording attached to {app} for auto-stop")
             self._schedule_ui_update()
             threading.Thread(
-                target=self._do_start, args=(title, "Manual", False), daemon=True,
+                target=self._do_start, args=(title, app, auto_stop), daemon=True,
             ).start()
         except Exception as e:
             logger.error(f"on_start error: {e}", exc_info=True)
@@ -865,6 +914,9 @@ class MeetingBarApp(rumps.App):
                 if not self._recording:
                     rumps.notification("Meeting Bar", "Not Recording",
                                       "No recording in progress.")
+                    return
+                if self._busy:
+                    logger.info("Stop ignored while another start/stop is in progress")
                     return
                 was_auto = self._recording_auto
             # If meeting is still active, suppress auto-restart

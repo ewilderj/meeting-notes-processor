@@ -14,6 +14,7 @@
 import subprocess
 import sys
 import importlib
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "transcriber"))
@@ -197,3 +198,67 @@ def test_audiomxd_start_detection_bypasses_query_cache(monkeypatch):
         is True
     )
     assert calls == 2
+
+
+def test_manual_start_infers_teams_from_recent_audio_session(monkeypatch):
+    """Manual starts during muted/listen-only Teams calls can still auto-stop."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "detect_meeting", lambda: None)
+    monkeypatch.setattr(meeting_bar, "MANUAL_START_AUDIO_LOOKBACK_SECONDS", 600)
+
+    def fake_run(args, *unused_args, **unused_kwargs):
+        if args[:2] == ["pgrep", "-x"]:
+            assert args[2] == "MSTeams"
+            return _FakeCompletedProcess("", returncode=0)
+        assert args[:3] == ["log", "show", "--last"]
+        assert args[3] == "600s"
+        return _FakeCompletedProcess(_audiomxd_output(("0x224002", True)))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert meeting_bar.infer_manual_start_app() == "Teams"
+
+
+def test_manual_start_falls_back_to_manual_without_recent_audio(monkeypatch):
+    """Ad hoc manual recordings should not get a fake app owner."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    monkeypatch.setattr(meeting_bar, "detect_meeting", lambda: None)
+
+    def fake_run(args, *unused_args, **unused_kwargs):
+        if args[:2] == ["pgrep", "-x"]:
+            return _FakeCompletedProcess("", returncode=1)
+        return _FakeCompletedProcess("")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert meeting_bar.infer_manual_start_app() == "Manual"
+
+
+def test_on_start_attaches_manual_recording_to_inferred_app(monkeypatch):
+    """The menu callback passes the inferred app and auto-stop flag to _do_start."""
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = False
+    app._schedule_ui_update = lambda: None
+    starts = []
+
+    monkeypatch.setattr(meeting_bar, "infer_manual_start_app", lambda: "Teams")
+    monkeypatch.setattr(meeting_bar, "lookup_calendar_title", lambda: "Current Meeting")
+
+    class ImmediateThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(meeting_bar.threading, "Thread", ImmediateThread)
+    app._do_start = lambda title, app_name, auto: starts.append((title, app_name, auto))
+
+    meeting_bar.MeetingBarApp.on_start(app, None)
+
+    assert starts == [("Current Meeting", "Teams", True)]
