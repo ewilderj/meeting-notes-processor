@@ -142,6 +142,26 @@ def test_build_whisper_command_uses_taskpolicy_fallback_path(tmp_path, monkeypat
     assert cmd[2] == "/tmp/whisper-cli"
 
 
+def test_room_capture_metadata_is_preserved(tmp_path):
+    recording = transcriber.Recording(
+        "Tablet Meeting",
+        tmp_path / "tablet.wav",
+        capture_mode="room",
+    )
+    recording.meeting_end = datetime.now(timezone.utc)
+
+    metadata = transcriber._build_transcript_front_matter(recording)
+
+    assert recording.to_dict()["capture_mode"] == "room"
+    assert "recording_source: transcriber" in metadata
+    assert "capture_mode: room" in metadata
+
+
+def test_start_request_rejects_unknown_capture_mode():
+    with pytest.raises(ValueError):
+        transcriber.StartRequest(title="Meeting", capture_mode="phone")
+
+
 @pytest.mark.asyncio
 async def test_wait_for_transcription_slot_defers_while_recording(monkeypatch):
     """Local mode should not start Whisper while a new recording is active."""

@@ -158,6 +158,31 @@ If you match to a calendar entry, add these properties to the :PROPERTIES: drawe
     return calendar_instructions + base_prompt
 
 
+def add_capture_mode_guidance(base_prompt: str, metadata: dict) -> str:
+    """Add capture-specific speaker guidance when a room microphone was used."""
+    if metadata.get("capture_mode") != "room":
+        return base_prompt
+    return """
+## ROOM MICROPHONE CAPTURE
+
+This meeting was captured through one physical room microphone while the user
+participated from another device. Both the nearby user and remote participants
+therefore appear in the same mono acoustic recording.
+
+- Treat `[S]` as a possible speaker-turn boundary, never as a stable identity.
+- Diarization may split one person into several apparent speakers. Reconcile
+  adjacent and recurring fragments using conversational continuity, vocabulary,
+  self-reference, direct address, and calendar participants.
+- The louder/nearer voice is often Edd, but volume alone is not enough to assign
+  identity. Use calendar and conversational evidence as the authority.
+- Do not create duplicate participants merely because the diarizer oversplit a
+  voice. Prefer the smallest participant set consistent with the conversation.
+
+## END ROOM MICROPHONE CAPTURE
+
+""" + base_prompt
+
+
 def extract_slug_from_org(org_file_path):
     """Extract the slug from the org file's property drawer."""
     try:
@@ -505,7 +530,7 @@ def split_transcript(filepath: str, split_positions: list[int], paths: dict) -> 
             
             # Build YAML front matter
             front_matter_lines = ['---']
-            for key in ('meeting_start', 'meeting_end', 'recording_source'):
+            for key in ('meeting_start', 'meeting_end', 'recording_source', 'capture_mode'):
                 if key in part_metadata:
                     front_matter_lines.append(f"{key}: {part_metadata[key]}")
             front_matter_lines.append('---\n\n')
@@ -1000,6 +1025,7 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     
     # Build the prompt - include calendar context if available
     final_prompt = prompt_template.format(input_file=input_relative, output_file=temp_org_filename)
+    final_prompt = add_capture_mode_guidance(final_prompt, metadata)
     
     if calendar_path and os.path.exists(calendar_path):
         # Parse calendar and filter to matching date

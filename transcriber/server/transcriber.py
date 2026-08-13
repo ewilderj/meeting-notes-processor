@@ -38,7 +38,7 @@ import wave
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -125,9 +125,10 @@ class RecordingState(str, Enum):
 
 
 class Recording:
-    def __init__(self, title: str, audio_path: Path):
+    def __init__(self, title: str, audio_path: Path, capture_mode: str = "standard"):
         self.title = title
         self.audio_path = audio_path
+        self.capture_mode = capture_mode
         self.transcript_path: Optional[Path] = None
         self.state = RecordingState.RECORDING
         self.meeting_start = datetime.now(timezone.utc)
@@ -139,6 +140,7 @@ class Recording:
     def to_dict(self) -> dict:
         return {
             "title": self.title,
+            "capture_mode": self.capture_mode,
             "state": self.state.value,
             "audio_path": str(self.audio_path),
             "transcript_path": str(self.transcript_path) if self.transcript_path else None,
@@ -170,6 +172,7 @@ app = FastAPI(title="Transcriber", version="0.1.0")
 
 class StartRequest(BaseModel):
     title: str
+    capture_mode: Literal["standard", "room"] = "standard"
 
 
 class StopResponse(BaseModel):
@@ -629,6 +632,25 @@ def _strip_timestamps_with_gaps(transcript: str) -> str:
     return cleaned
 
 
+def _build_transcript_front_matter(recording: Recording) -> str:
+    """Build validated capture metadata for the downstream summarizer."""
+    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    start_local = recording.meeting_start.astimezone(local_tz)
+    end_local = (
+        recording.meeting_end.astimezone(local_tz)
+        if recording.meeting_end
+        else start_local
+    )
+    return (
+        "---\n"
+        f"meeting_start: {start_local.isoformat()}\n"
+        f"meeting_end: {end_local.isoformat()}\n"
+        "recording_source: transcriber\n"
+        f"capture_mode: {recording.capture_mode}\n"
+        "---\n\n"
+    )
+
+
 async def _transcribe(recording: Recording) -> None:
     """Run whisper.cpp on the recorded audio and post result to webhook."""
     recording.state = RecordingState.TRANSCRIBING
@@ -669,18 +691,7 @@ async def _transcribe(recording: Recording) -> None:
         transcript_path.write_text(transcript_text)
         recording.transcript_path = transcript_path
 
-        # Build YAML front matter with timestamps
-        local_tz = datetime.now(timezone.utc).astimezone().tzinfo
-        start_local = recording.meeting_start.astimezone(local_tz)
-        end_local = recording.meeting_end.astimezone(local_tz) if recording.meeting_end else start_local
-
-        front_matter = (
-            "---\n"
-            f"meeting_start: {start_local.isoformat()}\n"
-            f"meeting_end: {end_local.isoformat()}\n"
-            f"recording_source: transcriber\n"
-            "---\n\n"
-        )
+        front_matter = _build_transcript_front_matter(recording)
         full_transcript = front_matter + transcript_text
 
         # POST to meetingnotesd webhook
@@ -775,7 +786,11 @@ async def start(req: StartRequest):
     safe_title = safe_title.strip().replace(" ", "-")[:50]
     audio_path = RECORDINGS_DIR / f"{ts}-{safe_title}.wav"
 
-    recording = Recording(title=req.title, audio_path=audio_path)
+    recording = Recording(
+        title=req.title,
+        audio_path=audio_path,
+        capture_mode=req.capture_mode,
+    )
 
     try:
         recording.vban_capture = VBANCapture(audio_path, port=VBAN_PORT)
@@ -789,6 +804,7 @@ async def start(req: StartRequest):
     return {
         "status": "recording",
         "title": req.title,
+        "capture_mode": recording.capture_mode,
         "audio_path": str(audio_path),
         "meeting_start": recording.meeting_start.isoformat(),
     }

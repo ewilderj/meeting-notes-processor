@@ -41,6 +41,7 @@ import socket
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
@@ -64,6 +65,10 @@ POLL_INTERVAL = int(os.getenv("MEETING_POLL_INTERVAL", "5"))  # seconds
 CONFIRM_POLLS = int(os.getenv("MEETING_CONFIRM_POLLS", "3"))
 MANUAL_START_AUDIO_LOOKBACK_SECONDS = int(
     os.getenv("MANUAL_START_AUDIO_LOOKBACK_SECONDS", "600")
+)
+RECORDING_REMINDER_SECONDS = int(os.getenv("MEETING_RECORDING_REMINDER_SECONDS", "120"))
+ROOM_RECORDING_END_GRACE_SECONDS = int(
+    os.getenv("ROOM_RECORDING_END_GRACE_SECONDS", "120")
 )
 
 # Calendar org file for meeting title lookup (optional)
@@ -104,6 +109,69 @@ MIC_ACTIVE_BIN = Path(__file__).parent / "mic_active"
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class CalendarMeeting:
+    title: str
+    start: datetime.datetime
+    end: datetime.datetime
+
+    @property
+    def occurrence_id(self) -> str:
+        return f"{self.start.isoformat()}|{self.end.isoformat()}|{self.title}"
+
+
+def read_calendar_meetings(now: datetime.datetime | None = None) -> list[CalendarMeeting]:
+    """Return today's timed calendar meetings from the Org calendar."""
+    cal_path = Path(CALENDAR_ORG)
+    if not cal_path.exists():
+        return []
+
+    if now is None:
+        now = datetime.datetime.now()
+
+    try:
+        content = cal_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.debug(f"Cannot read calendar file: {e}")
+        return []
+
+    today_str = now.strftime("%Y-%m-%d")
+    entry_re = re.compile(
+        r'^\* (.+?) <(\d{4}-\d{2}-\d{2}) \w{3} (\d{2}:\d{2})-(\d{2}:\d{2})>',
+        re.MULTILINE,
+    )
+    meetings = []
+    for match in entry_re.finditer(content):
+        if match.group(2) != today_str:
+            continue
+        try:
+            start = datetime.datetime.strptime(
+                f"{match.group(2)} {match.group(3)}", "%Y-%m-%d %H:%M"
+            )
+            end = datetime.datetime.strptime(
+                f"{match.group(2)} {match.group(4)}", "%Y-%m-%d %H:%M"
+            )
+        except ValueError:
+            continue
+        if end <= start:
+            continue
+        meetings.append(CalendarMeeting(match.group(1).strip(), start, end))
+    return meetings
+
+
+def current_calendar_meeting(
+    now: datetime.datetime | None = None,
+    meetings: list[CalendarMeeting] | None = None,
+) -> CalendarMeeting | None:
+    """Return the most recently started calendar meeting active at `now`."""
+    if now is None:
+        now = datetime.datetime.now()
+    if meetings is None:
+        meetings = read_calendar_meetings(now)
+    active = [meeting for meeting in meetings if meeting.start <= now < meeting.end]
+    return max(active, key=lambda meeting: meeting.start, default=None)
+
+
 def lookup_calendar_title(now: datetime.datetime | None = None) -> str | None:
     """Find the best matching calendar entry title for the current time.
 
@@ -116,46 +184,14 @@ def lookup_calendar_title(now: datetime.datetime | None = None) -> str | None:
 
     Returns the meeting title string, or None if no match.
     """
-    cal_path = Path(CALENDAR_ORG)
-    if not cal_path.exists():
-        return None
-
     if now is None:
         now = datetime.datetime.now()
-
-    today_str = now.strftime("%Y-%m-%d")
-
-    try:
-        content = cal_path.read_text(encoding="utf-8")
-    except OSError as e:
-        logger.debug(f"Cannot read calendar file: {e}")
-        return None
-
-    # Parse org entries: * Title <YYYY-MM-DD Day HH:MM-HH:MM>
-    entry_re = re.compile(
-        r'^\* (.+?) <(\d{4}-\d{2}-\d{2}) \w{3} (\d{2}:\d{2})-(\d{2}:\d{2})>',
-        re.MULTILINE,
-    )
 
     best_title = None
     best_delta = None  # seconds from meeting start to now (positive = we're late)
 
-    for m in entry_re.finditer(content):
-        date_str = m.group(2)
-        if date_str != today_str:
-            continue
-
-        title = m.group(1).strip()
-        start_str = m.group(3)
-
-        try:
-            start_time = datetime.datetime.strptime(
-                f"{date_str} {start_str}", "%Y-%m-%d %H:%M"
-            )
-        except ValueError:
-            continue
-
-        delta_s = (now - start_time).total_seconds()
+    for meeting in read_calendar_meetings(now):
+        delta_s = (now - meeting.start).total_seconds()
 
         # Skip if meeting hasn't started yet and we're more than 5 min early
         if delta_s < -300:
@@ -167,7 +203,7 @@ def lookup_calendar_title(now: datetime.datetime | None = None) -> str | None:
         abs_delta = abs(delta_s)
         if best_delta is None or abs_delta < best_delta:
             best_delta = abs_delta
-            best_title = title
+            best_title = meeting.title
 
     return best_title
 
@@ -560,9 +596,13 @@ def transcriber_status() -> dict | None:
         return None
 
 
-def transcriber_start(title: str) -> dict | None:
+def transcriber_start(title: str, capture_mode: str = "standard") -> dict | None:
     try:
-        r = requests.post(f"{TRANSCRIBER_URL}/start", json={"title": title}, timeout=10)
+        r = requests.post(
+            f"{TRANSCRIBER_URL}/start",
+            json={"title": title, "capture_mode": capture_mode},
+            timeout=10,
+        )
         if r.status_code == 409:
             logger.warning(f"Already recording: {r.json().get('detail', '')}")
             return r.json()
@@ -608,6 +648,8 @@ class MeetingBarApp(rumps.App):
         self._recording_title: str | None = None
         self._recording_app: str | None = None
         self._recording_auto: bool = False
+        self._recording_capture_mode = "standard"
+        self._recording_expected_end: datetime.datetime | None = None
         self._started_at: datetime.datetime | None = None
         self._detection_enabled = True
         self._busy = False  # True while start/stop in progress
@@ -615,18 +657,27 @@ class MeetingBarApp(rumps.App):
         self._transcriber_text = "Transcriber: checking…"
         self._confirm_app: str | None = None  # app being debounced
         self._confirm_count = 0  # consecutive detection count for debounce
+        self._pending_reminder: CalendarMeeting | None = None
+        self._handled_meeting_ids: set[str] = set()
+        self._snoozed_meeting_ids: dict[str, datetime.datetime] = {}
 
         # Menu — all items always have callbacks via @rumps.clicked.
         # Keep refs so we can update visibility via callAfter.
         self._status_item = rumps.MenuItem("Status: Idle")
         self._start_item = rumps.MenuItem("Start Recording")
+        self._room_start_item = rumps.MenuItem("Start Room Recording")
         self._stop_item = rumps.MenuItem("Stop Recording")
+        self._snooze_item = rumps.MenuItem("Remind in 5 Minutes")
+        self._not_attending_item = rumps.MenuItem("Not Attending")
         self._transcriber_item = rumps.MenuItem("Transcriber: checking…")
         self.menu = [
             self._status_item,
             None,
             self._start_item,
+            self._room_start_item,
             self._stop_item,
+            self._snooze_item,
+            self._not_attending_item,
             None,
             rumps.MenuItem("Auto-Detect Meetings"),
             self._transcriber_item,
@@ -638,6 +689,9 @@ class MeetingBarApp(rumps.App):
 
         # Initial UI state: hide Stop Recording
         self._stop_item.hidden = True
+        self._snooze_item.hidden = True
+        self._not_attending_item.hidden = True
+        rumps.notifications(self._on_notification)
 
         # Start background polling
         threading.Thread(target=self._poll_loop, daemon=True).start()
@@ -674,12 +728,15 @@ class MeetingBarApp(rumps.App):
                 busy = self._busy
                 rec_title = self._recording_title
                 transcriber = self._transcriber_text
+                reminder = self._pending_reminder
 
             # Icon
             if recording:
                 self.title = ICON_RECORDING
             elif busy:
                 self.title = "⏳"
+            elif reminder:
+                self.title = ICON_ERROR
             else:
                 self.title = ICON_IDLE
 
@@ -688,12 +745,17 @@ class MeetingBarApp(rumps.App):
                 self._status_item.title = f"Recording: {rec_title} ({self._duration})"
             elif busy:
                 self._status_item.title = "Starting…"
+            elif reminder:
+                self._status_item.title = f"Not recording: {reminder.title}"
             else:
                 self._status_item.title = "Status: Idle"
 
             # Show/hide Start and Stop mutually exclusively
             self._start_item.hidden = recording or busy
+            self._room_start_item.hidden = recording or busy
             self._stop_item.hidden = not recording
+            self._snooze_item.hidden = reminder is None or recording or busy
+            self._not_attending_item.hidden = reminder is None or recording or busy
 
             # Pilot status
             self._transcriber_item.title = transcriber
@@ -703,6 +765,85 @@ class MeetingBarApp(rumps.App):
     # -------------------------------------------------------------------
     # Background polling
     # -------------------------------------------------------------------
+
+    def _show_recording_reminder(self, meeting: CalendarMeeting):
+        """Show an actionable notification on the main thread."""
+        with self._lock:
+            if self._pending_reminder != meeting or self._recording or self._busy:
+                return
+        logger.info(f"Recording reminder: '{meeting.title}'")
+        rumps.notification(
+            "Meeting Bar",
+            "Meeting is not being recorded",
+            meeting.title,
+            data={"kind": "recording_reminder", "occurrence_id": meeting.occurrence_id},
+            action_button="Start Room Recording",
+            other_button="Not attending",
+        )
+
+    def _check_recording_reminder(self, now: datetime.datetime):
+        """Schedule one reminder for an unrecorded calendar occurrence."""
+        meeting = current_calendar_meeting(now)
+        with self._lock:
+            if self._recording:
+                if self._pending_reminder:
+                    self._handled_meeting_ids.add(self._pending_reminder.occurrence_id)
+                    self._pending_reminder = None
+                return
+            if self._busy:
+                return
+
+            if meeting is None:
+                self._pending_reminder = None
+                return
+
+            occurrence_id = meeting.occurrence_id
+            snoozed_until = self._snoozed_meeting_ids.get(occurrence_id)
+            blocked = occurrence_id in self._handled_meeting_ids
+            blocked = blocked or (snoozed_until is not None and now < snoozed_until)
+            elapsed = (now - meeting.start).total_seconds()
+            if blocked or elapsed <= RECORDING_REMINDER_SECONDS:
+                if self._pending_reminder == meeting:
+                    self._pending_reminder = None
+                return
+
+            if self._pending_reminder == meeting:
+                return
+            self._pending_reminder = meeting
+
+        self._schedule_ui_update()
+        callAfter(self._show_recording_reminder, meeting)
+
+    def _resolve_reminder(self, *, handled: bool, snooze_minutes: int = 0):
+        with self._lock:
+            meeting = self._pending_reminder
+            if meeting is None:
+                return None
+            if handled:
+                self._handled_meeting_ids.add(meeting.occurrence_id)
+            elif snooze_minutes:
+                self._snoozed_meeting_ids[meeting.occurrence_id] = (
+                    datetime.datetime.now() + datetime.timedelta(minutes=snooze_minutes)
+                )
+            self._pending_reminder = None
+        self._schedule_ui_update()
+        return meeting
+
+    def _on_notification(self, notification):
+        """Handle the two supported macOS notification actions."""
+        data = notification.data
+        if not isinstance(data, dict) or data.get("kind") != "recording_reminder":
+            return
+        with self._lock:
+            meeting = self._pending_reminder
+        if meeting is None or data.get("occurrence_id") != meeting.occurrence_id:
+            return
+
+        if notification.activation_type == "action_button_clicked":
+            self._start_room_recording(meeting)
+        elif notification.activation_type == "additional_action_clicked":
+            self._resolve_reminder(handled=True)
+            logger.info(f"Reminder dismissed as not attending: '{meeting.title}'")
 
     def _poll_loop(self):
         time.sleep(2)
@@ -727,8 +868,30 @@ class MeetingBarApp(rumps.App):
         # Schedule full UI update on main thread
         self._schedule_ui_update()
 
-        # Meeting detection
-        if not self._detection_enabled or self._busy:
+        now = datetime.datetime.now()
+        self._check_recording_reminder(now)
+
+        if self._busy:
+            return
+
+        with self._lock:
+            is_recording = self._recording
+            is_auto = self._recording_auto
+            rec_app = self._recording_app
+            capture_mode = self._recording_capture_mode
+            expected_end = self._recording_expected_end
+
+        if is_recording and capture_mode == "room":
+            if expected_end and now >= expected_end + datetime.timedelta(
+                seconds=ROOM_RECORDING_END_GRACE_SECONDS
+            ):
+                logger.info(f"Room meeting reached calendar end (was: {rec_app})")
+                threading.Thread(target=self._do_stop, daemon=True).start()
+            return
+
+        # App-based meeting detection can be disabled without disabling
+        # calendar reminders or room-recording end timers.
+        if not self._detection_enabled:
             return
 
         meeting_app = detect_meeting()
@@ -754,17 +917,13 @@ class MeetingBarApp(rumps.App):
             self._confirm_app = None
             self._confirm_count = 0
 
-        with self._lock:
-            is_recording = self._recording
-            is_auto = self._recording_auto
-            rec_app = self._recording_app
-
         if not is_recording and meeting_app:
             if self._suppress_auto:
                 pass  # User manually stopped; wait for meeting to end
             else:
                 logger.info(f"Meeting detected: {meeting_app}")
-                cal_title = lookup_calendar_title()
+                calendar_meeting = current_calendar_meeting(now)
+                cal_title = calendar_meeting.title if calendar_meeting else lookup_calendar_title(now)
                 if cal_title:
                     title = cal_title
                     logger.info(f"Calendar match: '{cal_title}'")
@@ -772,7 +931,10 @@ class MeetingBarApp(rumps.App):
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                     title = f"{meeting_app} Meeting {timestamp}"
                 threading.Thread(
-                    target=self._do_start, args=(title, meeting_app, True), daemon=True,
+                    target=self._do_start,
+                    args=(title, meeting_app, True),
+                    kwargs={"calendar_meeting": calendar_meeting},
+                    daemon=True,
                 ).start()
 
         elif is_recording and is_auto:
@@ -800,16 +962,31 @@ class MeetingBarApp(rumps.App):
     # Recording pipeline (background threads)
     # -------------------------------------------------------------------
 
-    def _do_start(self, title: str, app: str, auto: bool = False):
+    def _do_start(
+        self,
+        title: str,
+        app: str,
+        auto: bool = False,
+        *,
+        capture_mode: str = "standard",
+        expected_end: datetime.datetime | None = None,
+        calendar_meeting: CalendarMeeting | None = None,
+    ):
         with self._lock:
             if self._recording or self._busy:
                 return
             self._busy = True
 
         try:
-            logger.info(f"Starting recording: '{title}' ({app}, auto={auto})")
+            logger.info(
+                f"Starting recording: '{title}' ({app}, auto={auto}, capture={capture_mode})"
+            )
 
-            device_name, quality = find_best_device()
+            if capture_mode == "room":
+                device_name = find_mic_device()
+                quality = "room"
+            else:
+                device_name, quality = find_best_device()
             if not device_name:
                 logger.error("No suitable audio device found")
                 return
@@ -818,7 +995,7 @@ class MeetingBarApp(rumps.App):
             start_sender(device_name, mic=mic_name)
             time.sleep(3)
 
-            result = transcriber_start(title)
+            result = transcriber_start(title, capture_mode)
             if not result:
                 logger.error("Failed to start recording on transcriber")
                 stop_sender()
@@ -829,9 +1006,15 @@ class MeetingBarApp(rumps.App):
                 self._recording_title = title
                 self._recording_app = app
                 self._recording_auto = auto
+                self._recording_capture_mode = capture_mode
+                self._recording_expected_end = expected_end
                 self._started_at = datetime.datetime.now()
                 self._confirm_app = None  # reset for next detection cycle
                 self._confirm_count = 0
+                if calendar_meeting:
+                    self._handled_meeting_ids.add(calendar_meeting.occurrence_id)
+                if self._pending_reminder == calendar_meeting:
+                    self._pending_reminder = None
 
             self._schedule_ui_update()
             logger.info(f"Recording started: '{title}'")
@@ -861,6 +1044,8 @@ class MeetingBarApp(rumps.App):
                 self._recording_title = None
                 self._recording_app = None
                 self._recording_auto = False
+                self._recording_capture_mode = "standard"
+                self._recording_expected_end = None
                 self._started_at = None
 
             self._schedule_ui_update()
@@ -876,6 +1061,8 @@ class MeetingBarApp(rumps.App):
                 self._recording_title = None
                 self._recording_app = None
                 self._recording_auto = False
+                self._recording_capture_mode = "standard"
+                self._recording_expected_end = None
                 self._started_at = None
         finally:
             with self._lock:
@@ -897,7 +1084,8 @@ class MeetingBarApp(rumps.App):
 
             app = infer_manual_start_app()
             auto_stop = app != "Manual"
-            cal_title = lookup_calendar_title()
+            calendar_meeting = current_calendar_meeting()
+            cal_title = calendar_meeting.title if calendar_meeting else lookup_calendar_title()
             if cal_title:
                 title = cal_title
                 logger.info(f"Manual start with calendar title: '{title}'")
@@ -908,10 +1096,55 @@ class MeetingBarApp(rumps.App):
                 logger.info(f"Manual recording attached to {app} for auto-stop")
             self._schedule_ui_update()
             threading.Thread(
-                target=self._do_start, args=(title, app, auto_stop), daemon=True,
+                target=self._do_start,
+                args=(title, app, auto_stop),
+                kwargs={"calendar_meeting": calendar_meeting},
+                daemon=True,
             ).start()
         except Exception as e:
             logger.error(f"on_start error: {e}", exc_info=True)
+
+    def _start_room_recording(self, meeting: CalendarMeeting | None = None):
+        with self._lock:
+            if self._recording or self._busy:
+                logger.info("Already recording or busy")
+                return
+        if meeting is None:
+            meeting = current_calendar_meeting()
+        title = meeting.title if meeting else (
+            f"Room Meeting at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        expected_end = meeting.end if meeting else None
+        threading.Thread(
+            target=self._do_start,
+            args=(title, "Room", expected_end is not None),
+            kwargs={
+                "capture_mode": "room",
+                "expected_end": expected_end,
+                "calendar_meeting": meeting,
+            },
+            daemon=True,
+        ).start()
+
+    @rumps.clicked("Start Room Recording")
+    def on_room_start(self, sender):
+        try:
+            logger.info("on_room_start callback fired")
+            self._start_room_recording()
+        except Exception as e:
+            logger.error(f"on_room_start error: {e}", exc_info=True)
+
+    @rumps.clicked("Remind in 5 Minutes")
+    def on_snooze_reminder(self, sender):
+        meeting = self._resolve_reminder(handled=False, snooze_minutes=5)
+        if meeting:
+            logger.info(f"Recording reminder snoozed: '{meeting.title}'")
+
+    @rumps.clicked("Not Attending")
+    def on_not_attending(self, sender):
+        meeting = self._resolve_reminder(handled=True)
+        if meeting:
+            logger.info(f"Reminder dismissed as not attending: '{meeting.title}'")
 
     @rumps.clicked("Stop Recording")
     def on_stop(self, sender):

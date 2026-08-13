@@ -103,6 +103,12 @@ The transcriber is a FastAPI server (`transcriber.py`) running on port 8000:
 
 - **`POST /start`** — Opens a UDP socket on port 6980, starts capturing VBAN packets directly to a WAV file
 - **`POST /stop`** — Stops capture, closes the WAV, runs whisper-cli on it, POSTs the transcript to the webhook
+
+`POST /start` accepts an optional `capture_mode` of `standard` or `room`.
+Room recordings are started from the menu bar's **Start Room Recording** item,
+capture only the physical laptop microphone, and carry `capture_mode: room`
+through transcript metadata so speaker oversplitting can be reconciled during
+summarization.
 - **`GET /status`** — Health check with disk space, current recording state, etc.
 
 The transcriber captures VBAN audio directly — no BlackHole, no ffmpeg, no intermediate services on the server side.

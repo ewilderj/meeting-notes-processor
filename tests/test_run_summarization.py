@@ -489,6 +489,52 @@ class TestBuildCalendarAwarePrompt:
         assert '`[speaker:Edd]`' in result
 
 
+class TestCaptureModeGuidance:
+    def test_room_capture_reconciles_oversplit_speakers(self):
+        result = run_summarization.add_capture_mode_guidance(
+            "Base prompt",
+            {"capture_mode": "room"},
+        )
+
+        assert "ROOM MICROPHONE CAPTURE" in result
+        assert "split one person" in result
+        assert "volume alone is not enough" in result
+        assert "smallest participant set" in result
+        assert result.endswith("Base prompt")
+
+    def test_standard_capture_does_not_add_room_guidance(self):
+        assert run_summarization.add_capture_mode_guidance(
+            "Base prompt",
+            {"capture_mode": "standard"},
+        ) == "Base prompt"
+
+
+def test_split_transcript_preserves_room_capture_mode(tmp_path):
+    source = tmp_path / "meeting.txt"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    source.write_text(
+        "---\n"
+        "meeting_start: 2026-08-13T09:00:00\n"
+        "meeting_end: 2026-08-13T10:00:00\n"
+        "recording_source: transcriber\n"
+        "capture_mode: room\n"
+        "---\n\n"
+        "First meeting. Second meeting.",
+        encoding="utf-8",
+    )
+
+    parts = run_summarization.split_transcript(
+        str(source),
+        [len("First meeting.")],
+        {"inbox": str(inbox)},
+    )
+
+    assert len(parts) == 2
+    for part in parts:
+        assert run_summarization.parse_transcript_header(part)["capture_mode"] == "room"
+
+
 class TestParseTranscriptHeader:
     """Tests for parse_transcript_header() function."""
 

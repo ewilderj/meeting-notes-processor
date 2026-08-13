@@ -15,6 +15,7 @@ import subprocess
 import sys
 import importlib
 import threading
+import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "transcriber"))
@@ -245,22 +246,26 @@ def test_on_start_attaches_manual_recording_to_inferred_app(monkeypatch):
     starts = []
 
     monkeypatch.setattr(meeting_bar, "infer_manual_start_app", lambda: "Teams")
+    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda: None)
     monkeypatch.setattr(meeting_bar, "lookup_calendar_title", lambda: "Current Meeting")
 
     class ImmediateThread:
-        def __init__(self, target, args=(), daemon=None):
+        def __init__(self, target, args=(), kwargs=None, daemon=None):
             self.target = target
             self.args = args
+            self.kwargs = kwargs or {}
 
         def start(self):
-            self.target(*self.args)
+            self.target(*self.args, **self.kwargs)
 
     monkeypatch.setattr(meeting_bar.threading, "Thread", ImmediateThread)
-    app._do_start = lambda title, app_name, auto: starts.append((title, app_name, auto))
+    app._do_start = lambda title, app_name, auto, **kwargs: starts.append(
+        (title, app_name, auto, kwargs["calendar_meeting"])
+    )
 
     meeting_bar.MeetingBarApp.on_start(app, None)
 
-    assert starts == [("Current Meeting", "Teams", True)]
+    assert starts == [("Current Meeting", "Teams", True, None)]
 
 
 def test_native_teams_detection_accepts_teams2_helper_process(monkeypatch):
@@ -303,3 +308,185 @@ def test_native_teams_detection_requires_teams_process(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(meeting_bar, "_audiomxd_session_active", fail_audiomxd)
     assert meeting_bar.detect_teams_meeting() is False
+
+
+def test_calendar_meeting_includes_start_end_and_stable_identity(tmp_path, monkeypatch):
+    calendar = tmp_path / "outlook.org"
+    calendar.write_text(
+        "* Morning Sync <2026-08-13 Thu 09:00-09:30>\n"
+        "* Tomorrow <2026-08-14 Fri 09:00-09:30>\n"
+    )
+    monkeypatch.setattr(meeting_bar, "CALENDAR_ORG", str(calendar))
+    now = datetime.datetime(2026, 8, 13, 9, 5)
+
+    meetings = meeting_bar.read_calendar_meetings(now)
+
+    assert len(meetings) == 1
+    assert meetings[0].title == "Morning Sync"
+    assert meetings[0].start == datetime.datetime(2026, 8, 13, 9, 0)
+    assert meetings[0].end == datetime.datetime(2026, 8, 13, 9, 30)
+    assert meeting_bar.current_calendar_meeting(now, meetings) == meetings[0]
+    assert meetings[0].occurrence_id == (
+        "2026-08-13T09:00:00|2026-08-13T09:30:00|Morning Sync"
+    )
+
+
+def test_recording_reminder_waits_until_more_than_two_minutes(monkeypatch):
+    meeting = meeting_bar.CalendarMeeting(
+        "Morning Sync",
+        datetime.datetime(2026, 8, 13, 9, 0),
+        datetime.datetime(2026, 8, 13, 9, 30),
+    )
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = False
+    app._pending_reminder = None
+    app._handled_meeting_ids = set()
+    app._snoozed_meeting_ids = {}
+    app._schedule_ui_update = lambda: None
+    scheduled = []
+
+    monkeypatch.setattr(meeting_bar, "RECORDING_REMINDER_SECONDS", 120)
+    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda now: meeting)
+    monkeypatch.setattr(
+        meeting_bar, "callAfter", lambda callback, value: scheduled.append((callback, value))
+    )
+
+    app._check_recording_reminder(datetime.datetime(2026, 8, 13, 9, 2))
+    assert app._pending_reminder is None
+
+    app._check_recording_reminder(datetime.datetime(2026, 8, 13, 9, 2, 1))
+    app._check_recording_reminder(datetime.datetime(2026, 8, 13, 9, 2, 6))
+
+    assert app._pending_reminder == meeting
+    assert scheduled == [(app._show_recording_reminder, meeting)]
+
+
+def test_busy_start_does_not_dismiss_pending_reminder(monkeypatch):
+    meeting = meeting_bar.CalendarMeeting(
+        "Morning Sync",
+        datetime.datetime(2026, 8, 13, 9, 0),
+        datetime.datetime(2026, 8, 13, 9, 30),
+    )
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = True
+    app._pending_reminder = meeting
+    app._handled_meeting_ids = set()
+    app._snoozed_meeting_ids = {}
+
+    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda now: meeting)
+
+    app._check_recording_reminder(datetime.datetime(2026, 8, 13, 9, 5))
+
+    assert app._pending_reminder == meeting
+    assert meeting.occurrence_id not in app._handled_meeting_ids
+
+
+def test_room_recording_uses_only_physical_microphone(monkeypatch):
+    meeting = meeting_bar.CalendarMeeting(
+        "Tablet Meeting",
+        datetime.datetime(2026, 8, 13, 9, 0),
+        datetime.datetime(2026, 8, 13, 9, 30),
+    )
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = False
+    app._pending_reminder = meeting
+    app._handled_meeting_ids = set()
+    app._confirm_app = None
+    app._confirm_count = 0
+    app._schedule_ui_update = lambda: None
+    sender_calls = []
+    api_calls = []
+
+    monkeypatch.setattr(meeting_bar, "find_mic_device", lambda: "Desk Microphone")
+    monkeypatch.setattr(
+        meeting_bar, "start_sender", lambda device, mic=None: sender_calls.append((device, mic))
+    )
+    monkeypatch.setattr(
+        meeting_bar,
+        "transcriber_start",
+        lambda title, capture_mode: api_calls.append((title, capture_mode))
+        or {"status": "recording"},
+    )
+    monkeypatch.setattr(meeting_bar.time, "sleep", lambda _seconds: None)
+
+    app._do_start(
+        meeting.title,
+        "Room",
+        True,
+        capture_mode="room",
+        expected_end=meeting.end,
+        calendar_meeting=meeting,
+    )
+
+    assert sender_calls == [("Desk Microphone", None)]
+    assert api_calls == [("Tablet Meeting", "room")]
+    assert app._recording_capture_mode == "room"
+    assert app._recording_expected_end == meeting.end
+    assert meeting.occurrence_id in app._handled_meeting_ids
+
+
+def test_notification_action_starts_room_recording():
+    meeting = meeting_bar.CalendarMeeting(
+        "Tablet Meeting",
+        datetime.datetime(2026, 8, 13, 9, 0),
+        datetime.datetime(2026, 8, 13, 9, 30),
+    )
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._pending_reminder = meeting
+    started = []
+    app._start_room_recording = lambda value: started.append(value)
+
+    class Notification:
+        data = {"kind": "recording_reminder", "occurrence_id": meeting.occurrence_id}
+        activation_type = "action_button_clicked"
+
+    app._on_notification(Notification())
+
+    assert started == [meeting]
+
+
+def test_room_recording_auto_stops_after_calendar_grace(monkeypatch):
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = True
+    app._recording_auto = True
+    app._recording_app = "Room"
+    app._recording_capture_mode = "room"
+    app._recording_expected_end = datetime.datetime.now() - datetime.timedelta(minutes=3)
+    app._busy = False
+    app._detection_enabled = False
+    app._transcriber_text = ""
+    app._pending_reminder = None
+    app._schedule_ui_update = lambda: None
+    app._check_recording_reminder = lambda _now: None
+    stops = []
+
+    class ImmediateThread:
+        def __init__(self, target, args=(), kwargs=None, daemon=None):
+            self.target = target
+            self.args = args
+            self.kwargs = kwargs or {}
+
+        def start(self):
+            self.target(*self.args, **self.kwargs)
+
+    monkeypatch.setattr(meeting_bar, "ROOM_RECORDING_END_GRACE_SECONDS", 120)
+    monkeypatch.setattr(meeting_bar, "transcriber_status", lambda: {"status": "ok"})
+    monkeypatch.setattr(
+        meeting_bar,
+        "detect_meeting",
+        lambda: (_ for _ in ()).throw(AssertionError("room mode should skip app detection")),
+    )
+    monkeypatch.setattr(meeting_bar.threading, "Thread", ImmediateThread)
+    app._do_stop = lambda: stops.append(True)
+
+    app._poll_work()
+
+    assert stops == [True]

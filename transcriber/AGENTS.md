@@ -151,6 +151,8 @@ or mDNS).
 | `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |
 | `AUDIOMXD_END_QUERY_TTL_SECONDS` | `15` | Seconds to cache expensive Teams/Edge audiomxd `log show` queries for end detection only |
 | `MEETING_CALENDAR_ORG` | `~/gtd/outlook.org` | Org-mode calendar for title lookup |
+| `MEETING_RECORDING_REMINDER_SECONDS` | `120` | Show a missed-recording reminder after this many seconds in a calendar meeting |
+| `ROOM_RECORDING_END_GRACE_SECONDS` | `120` | Keep room recordings running this many seconds past the calendar end |
 
 ## Whisper Configuration
 
@@ -164,6 +166,10 @@ or mDNS).
   audio on the left channel and the local mic on the right channel. The
   transcriber annotates high-confidence mic-dominant segments as
   `[speaker:Edd]` before handing the transcript to the summarizer.
+- **Room capture**: `Start Room Recording` captures only the laptop's physical
+  microphone as mono audio and emits `capture_mode: room`. The summarizer uses
+  room-specific guidance to reconcile diarization oversplitting; it must not
+  infer Edd from channel dominance because both sides share one acoustic channel.
 
 ## Meeting Detection — Key Constraints
 
@@ -247,6 +253,12 @@ Matching rules:
 
 The matched title is shown in the menu bar status, used as the recording title
 sent to the transcriber, and logged.
+
+If a timed calendar meeting has been active for more than two minutes without
+a recording, the menu bar shows a warning and a macOS notification with
+`Start Room Recording` and `Not attending` actions. The menu also exposes a
+five-minute snooze while the reminder is active. Room recordings stop at the
+calendar end plus the configured grace period.
 
 ## Makefile Reference
 
