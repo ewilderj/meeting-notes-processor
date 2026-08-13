@@ -33,6 +33,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Copilot executable path - override with COPILOT_PATH env var for systemd/non-PATH contexts
 COPILOT_PATH = os.environ.get('COPILOT_PATH', 'copilot')
+DEFAULT_COPILOT_MODEL = 'gpt-5.6-terra'
 
 
 def get_workspace_paths(workspace_dir: str) -> dict:
@@ -893,7 +894,7 @@ def enrich_with_calendar(org_path: str, transcript_path: str, calendar_path: str
     # Build prompt and run LLM
     prompt = build_calendar_prompt(notes, day_entries)
     
-    model_name = model if model else 'claude-sonnet-4.5'
+    model_name = model if model else DEFAULT_COPILOT_MODEL
     command = [COPILOT_PATH, '-p', prompt, '--allow-all-tools', '--allow-all-paths', '--model', model_name]
     
     try:
@@ -1070,7 +1071,7 @@ def process_transcript(input_file, paths, target='copilot', model=None, prompt_t
     print(f"  Generating summary...")
 
     if target == 'copilot':
-        model_name = model if model else 'claude-sonnet-4.5'
+        model_name = model if model else DEFAULT_COPILOT_MODEL
         command = [
             COPILOT_PATH,
             '-p', final_prompt,
@@ -1446,7 +1447,13 @@ def run_summarization():
                         help='Path to data repository. Default: WORKSPACE_DIR env var, or current directory.')
     parser.add_argument('--target', choices=['copilot', 'gemini'], default='copilot', 
                         help='The CLI tool to use (copilot or gemini). Default is copilot.')
-    parser.add_argument('--model', help='The model to use. Defaults to claude-sonnet-4.5 for copilot and gemini-3-flash-preview for gemini.')
+    parser.add_argument(
+        '--model',
+        help=(
+            f'The model to use. Defaults to {DEFAULT_COPILOT_MODEL} for copilot '
+            'and gemini-3-flash-preview for gemini.'
+        ),
+    )
     parser.add_argument('--prompt', default=None,
                         help='Path to the prompt template file. Default: prompt.txt in workspace, or script directory as fallback.')
     parser.add_argument('--git', action='store_true',

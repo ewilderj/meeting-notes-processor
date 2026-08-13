@@ -31,6 +31,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import run_summarization
 
 
+def test_default_copilot_model_is_terra():
+    assert run_summarization.DEFAULT_COPILOT_MODEL == "gpt-5.6-terra"
+
+
 class TestGetWorkspacePaths:
     """Tests for get_workspace_paths() function."""
 
