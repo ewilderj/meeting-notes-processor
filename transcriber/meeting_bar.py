@@ -114,6 +114,7 @@ class CalendarMeeting:
     title: str
     start: datetime.datetime
     end: datetime.datetime
+    has_video_call: bool = False
 
     @property
     def occurrence_id(self) -> str:
@@ -140,8 +141,13 @@ def read_calendar_meetings(now: datetime.datetime | None = None) -> list[Calenda
         r'^\* (.+?) <(\d{4}-\d{2}-\d{2}) \w{3} (\d{2}:\d{2})-(\d{2}:\d{2})>',
         re.MULTILINE,
     )
+    join_call_re = re.compile(
+        r'\[\[https?://[^\]\n]+\]\[[^\]\n]*Join Call[^\]\n]*\]\]',
+        re.IGNORECASE,
+    )
     meetings = []
-    for match in entry_re.finditer(content):
+    matches = list(entry_re.finditer(content))
+    for index, match in enumerate(matches):
         if match.group(2) != today_str:
             continue
         try:
@@ -155,20 +161,36 @@ def read_calendar_meetings(now: datetime.datetime | None = None) -> list[Calenda
             continue
         if end <= start:
             continue
-        meetings.append(CalendarMeeting(match.group(1).strip(), start, end))
+        entry_end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        entry_body = content[match.end():entry_end]
+        meetings.append(
+            CalendarMeeting(
+                match.group(1).strip(),
+                start,
+                end,
+                has_video_call=bool(join_call_re.search(entry_body)),
+            )
+        )
     return meetings
 
 
 def current_calendar_meeting(
     now: datetime.datetime | None = None,
     meetings: list[CalendarMeeting] | None = None,
+    *,
+    require_video_call: bool = False,
 ) -> CalendarMeeting | None:
     """Return the most recently started calendar meeting active at `now`."""
     if now is None:
         now = datetime.datetime.now()
     if meetings is None:
         meetings = read_calendar_meetings(now)
-    active = [meeting for meeting in meetings if meeting.start <= now < meeting.end]
+    active = [
+        meeting
+        for meeting in meetings
+        if meeting.start <= now < meeting.end
+        and (meeting.has_video_call or not require_video_call)
+    ]
     return max(active, key=lambda meeting: meeting.start, default=None)
 
 
@@ -783,7 +805,7 @@ class MeetingBarApp(rumps.App):
 
     def _check_recording_reminder(self, now: datetime.datetime):
         """Schedule one reminder for an unrecorded calendar occurrence."""
-        meeting = current_calendar_meeting(now)
+        meeting = current_calendar_meeting(now, require_video_call=True)
         with self._lock:
             if self._recording:
                 if self._pending_reminder:

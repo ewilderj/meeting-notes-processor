@@ -254,11 +254,13 @@ Matching rules:
 The matched title is shown in the menu bar status, used as the recording title
 sent to the transcriber, and logged.
 
-If a timed calendar meeting has been active for more than two minutes without
-a recording, the menu bar shows a warning and a macOS notification with
-`Start Room Recording` and `Not attending` actions. The menu also exposes a
-five-minute snooze while the reminder is active. Room recordings stop at the
-calendar end plus the configured grace period.
+If a timed calendar meeting with an explicit `📹 Join Call` link has been active
+for more than two minutes without a recording, the menu bar shows a warning and
+a macOS notification with `Start Room Recording` and `Not attending` actions.
+Timed events without a video-call link are treated as time blocks and do not
+trigger recording warnings. The menu also exposes a five-minute snooze while
+the reminder is active. Room recordings stop at the calendar end plus the
+configured grace period.
 
 ## Makefile Reference
 

@@ -314,6 +314,11 @@ def test_calendar_meeting_includes_start_end_and_stable_identity(tmp_path, monke
     calendar = tmp_path / "outlook.org"
     calendar.write_text(
         "* Morning Sync <2026-08-13 Thu 09:00-09:30>\n"
+        "  [[https://teams.microsoft.com/l/meetup-join/example][📹 Join Call]]\n"
+        "* Focus Block <2026-08-13 Thu 09:05-10:00>\n"
+        "  :PROPERTIES:\n"
+        "  :ORGANIZER: ewilderj@github.com\n"
+        "  :END:\n"
         "* Tomorrow <2026-08-14 Fri 09:00-09:30>\n"
     )
     monkeypatch.setattr(meeting_bar, "CALENDAR_ORG", str(calendar))
@@ -321,11 +326,17 @@ def test_calendar_meeting_includes_start_end_and_stable_identity(tmp_path, monke
 
     meetings = meeting_bar.read_calendar_meetings(now)
 
-    assert len(meetings) == 1
+    assert len(meetings) == 2
     assert meetings[0].title == "Morning Sync"
     assert meetings[0].start == datetime.datetime(2026, 8, 13, 9, 0)
     assert meetings[0].end == datetime.datetime(2026, 8, 13, 9, 30)
-    assert meeting_bar.current_calendar_meeting(now, meetings) == meetings[0]
+    assert meetings[0].has_video_call is True
+    assert meetings[1].has_video_call is False
+    assert meeting_bar.current_calendar_meeting(now, meetings) == meetings[1]
+    assert (
+        meeting_bar.current_calendar_meeting(now, meetings, require_video_call=True)
+        == meetings[0]
+    )
     assert meetings[0].occurrence_id == (
         "2026-08-13T09:00:00|2026-08-13T09:30:00|Morning Sync"
     )
@@ -336,6 +347,7 @@ def test_recording_reminder_waits_until_more_than_two_minutes(monkeypatch):
         "Morning Sync",
         datetime.datetime(2026, 8, 13, 9, 0),
         datetime.datetime(2026, 8, 13, 9, 30),
+        has_video_call=True,
     )
     app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
     app._lock = threading.Lock()
@@ -348,7 +360,11 @@ def test_recording_reminder_waits_until_more_than_two_minutes(monkeypatch):
     scheduled = []
 
     monkeypatch.setattr(meeting_bar, "RECORDING_REMINDER_SECONDS", 120)
-    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda now: meeting)
+    monkeypatch.setattr(
+        meeting_bar,
+        "current_calendar_meeting",
+        lambda now, require_video_call=False: meeting,
+    )
     monkeypatch.setattr(
         meeting_bar, "callAfter", lambda callback, value: scheduled.append((callback, value))
     )
@@ -363,11 +379,42 @@ def test_recording_reminder_waits_until_more_than_two_minutes(monkeypatch):
     assert scheduled == [(app._show_recording_reminder, meeting)]
 
 
+def test_recording_reminder_ignores_time_block_without_video_call(tmp_path, monkeypatch):
+    calendar = tmp_path / "outlook.org"
+    calendar.write_text(
+        "* Weekly review <2026-08-14 Fri 14:30-15:30>\n"
+        "  :PROPERTIES:\n"
+        "  :ORGANIZER: ewilderj@github.com\n"
+        "  :END:\n"
+    )
+    monkeypatch.setattr(meeting_bar, "CALENDAR_ORG", str(calendar))
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = False
+    app._pending_reminder = None
+    app._handled_meeting_ids = set()
+    app._snoozed_meeting_ids = {}
+    scheduled = []
+    app._schedule_ui_update = lambda: scheduled.append("ui")
+    monkeypatch.setattr(
+        meeting_bar,
+        "callAfter",
+        lambda callback, value: scheduled.append((callback, value)),
+    )
+
+    app._check_recording_reminder(datetime.datetime(2026, 8, 14, 14, 59))
+
+    assert app._pending_reminder is None
+    assert scheduled == []
+
+
 def test_busy_start_does_not_dismiss_pending_reminder(monkeypatch):
     meeting = meeting_bar.CalendarMeeting(
         "Morning Sync",
         datetime.datetime(2026, 8, 13, 9, 0),
         datetime.datetime(2026, 8, 13, 9, 30),
+        has_video_call=True,
     )
     app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
     app._lock = threading.Lock()
@@ -377,7 +424,11 @@ def test_busy_start_does_not_dismiss_pending_reminder(monkeypatch):
     app._handled_meeting_ids = set()
     app._snoozed_meeting_ids = {}
 
-    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda now: meeting)
+    monkeypatch.setattr(
+        meeting_bar,
+        "current_calendar_meeting",
+        lambda now, require_video_call=False: meeting,
+    )
 
     app._check_recording_reminder(datetime.datetime(2026, 8, 13, 9, 5))
 
