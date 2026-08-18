@@ -323,7 +323,7 @@ def test_native_teams_detection_accepts_teams2_helper_process(monkeypatch):
     monkeypatch.setattr(
         meeting_bar,
         "_audiomxd_session_active",
-        lambda app_name, default_if_no_entries, use_cached_sessions: True,
+        lambda app_name, **kwargs: True,
     )
 
     assert meeting_bar.detect_teams_meeting() is True
@@ -347,6 +347,88 @@ def test_native_teams_detection_requires_teams_process(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(meeting_bar, "_audiomxd_session_active", fail_audiomxd)
     assert meeting_bar.detect_teams_meeting() is False
+
+
+def test_native_teams_detection_recovers_active_session_after_restart(monkeypatch):
+    """First detection uses a wide replay, then cached state bridges quiet windows."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    meeting_bar._AUDIOMXD_BOOTSTRAPPED_APPS.clear()
+    monkeypatch.setattr(meeting_bar, "_teams_process_running", lambda: True)
+    monkeypatch.setattr(meeting_bar, "AUDIOMXD_STARTUP_LOOKBACK_SECONDS", 21600)
+    outputs = iter([
+        _audiomxd_transition_output(("0x2e0074", True)),
+        "",
+    ])
+    commands = []
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        return _FakeCompletedProcess(next(outputs))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert meeting_bar.detect_teams_meeting() is True
+    assert meeting_bar.detect_teams_meeting() is True
+    assert "21600s" in commands[0]
+    assert "120s" in commands[1]
+
+
+def test_native_teams_exit_clears_cached_audio_sessions(monkeypatch):
+    """A closed Teams process invalidates replayed audio state."""
+    meeting_bar._AUDIOMXD_SESSION_STATES["Microsoft Teams"] = {"0x2e0074": True}
+    meeting_bar._AUDIOMXD_BOOTSTRAPPED_APPS.add("Microsoft Teams")
+    monkeypatch.setattr(meeting_bar, "_teams_process_running", lambda: False)
+
+    assert meeting_bar.detect_teams_meeting() is False
+    assert "Microsoft Teams" not in meeting_bar._AUDIOMXD_SESSION_STATES
+    assert "Microsoft Teams" not in meeting_bar._AUDIOMXD_BOOTSTRAPPED_APPS
+
+
+def test_sender_running_rejects_reused_pid(tmp_path, monkeypatch):
+    pid_file = tmp_path / "sender.pid"
+    pid_file.write_text("4242")
+    monkeypatch.setattr(meeting_bar, "PID_FILE", pid_file)
+    monkeypatch.setattr(meeting_bar.os, "kill", lambda _pid, _signal: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess("/usr/bin/unrelated-process"),
+    )
+
+    assert meeting_bar._sender_running() is None
+    assert not pid_file.exists()
+
+
+def test_stop_sender_escalates_when_graceful_shutdown_stalls(tmp_path, monkeypatch):
+    pid_file = tmp_path / "sender.pid"
+    pid_file.write_text("4242")
+    monkeypatch.setattr(meeting_bar, "PID_FILE", pid_file)
+    monkeypatch.setattr(meeting_bar, "_sender_running", lambda: 4242)
+    monkeypatch.setattr(meeting_bar.time, "sleep", lambda _seconds: None)
+    group_signals = []
+    monkeypatch.setattr(
+        meeting_bar.os,
+        "killpg",
+        lambda pid, sig: group_signals.append((pid, sig)),
+    )
+    liveness_checks = 0
+
+    def fake_kill(_pid, _signal):
+        nonlocal liveness_checks
+        liveness_checks += 1
+        if liveness_checks > 20:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(meeting_bar.os, "kill", fake_kill)
+
+    meeting_bar.stop_sender()
+
+    assert group_signals == [
+        (4242, meeting_bar.signal.SIGTERM),
+        (4242, meeting_bar.signal.SIGKILL),
+    ]
+    assert not pid_file.exists()
 
 
 def test_calendar_meeting_includes_start_end_and_stable_identity(tmp_path, monkeypatch):
@@ -580,3 +662,39 @@ def test_room_recording_auto_stops_after_calendar_grace(monkeypatch):
     app._poll_work()
 
     assert stops == [True]
+
+
+def test_poll_adopts_active_transcriber_recording_after_restart(monkeypatch):
+    app = meeting_bar.MeetingBarApp.__new__(meeting_bar.MeetingBarApp)
+    app._lock = threading.Lock()
+    app._recording = False
+    app._busy = False
+    app._detection_enabled = True
+    app._transcriber_text = ""
+    app._pending_reminder = None
+    app._handled_meeting_ids = set()
+    app._confirm_app = None
+    app._confirm_count = 0
+    app._suppress_auto = False
+    app._schedule_ui_update = lambda: None
+    app._check_recording_reminder = lambda _now: None
+    status = {
+        "status": "ok",
+        "recording": {
+            "title": "Recovered Teams Call",
+            "capture_mode": "standard",
+            "meeting_start": "2026-08-18T16:00:00+00:00",
+        },
+    }
+
+    monkeypatch.setattr(meeting_bar, "transcriber_status", lambda: status)
+    monkeypatch.setattr(meeting_bar, "detect_meeting", lambda: "Teams")
+    monkeypatch.setattr(meeting_bar, "_teams_audio_session_active", lambda: True)
+    monkeypatch.setattr(meeting_bar, "current_calendar_meeting", lambda _now: None)
+
+    app._poll_work()
+
+    assert app._recording is True
+    assert app._recording_title == "Recovered Teams Call"
+    assert app._recording_app == "Teams"
+    assert app._recording_auto is True
