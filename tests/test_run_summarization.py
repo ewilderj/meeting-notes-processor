@@ -17,6 +17,7 @@ Run with: uv run pytest tests/test_run_summarization.py -v
 """
 
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -128,20 +129,104 @@ class TestLoadPromptTemplate:
     def test_uses_default_when_none_specified(self):
         """Should use get_default_prompt_file() when prompt_file is None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a prompt file in workspace
             prompt_path = Path(tmpdir) / 'prompt.txt'
             prompt_path.write_text('Default workspace prompt')
-            
+
             result = run_summarization.load_prompt_template(None, tmpdir)
-            
+
             assert result == 'Default workspace prompt'
 
     def test_exits_on_missing_file(self):
         """Should sys.exit(1) if prompt file doesn't exist."""
         with pytest.raises(SystemExit) as exc_info:
             run_summarization.load_prompt_template('/nonexistent/prompt.txt', '.')
-        
+
         assert exc_info.value.code == 1
+
+
+class TestCalendarFreshness:
+    def test_accepts_recent_non_git_calendar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Current meeting\n')
+            now = calendar.stat().st_mtime + 60
+
+            fresh, age_seconds = run_summarization.calendar_is_fresh(
+                str(calendar), now=now
+            )
+
+            assert fresh is True
+            assert age_seconds == pytest.approx(60)
+
+    def test_rejects_stale_non_git_calendar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Old meeting\n')
+            now = (
+                calendar.stat().st_mtime
+                + run_summarization.CALENDAR_MAX_AGE_SECONDS
+                + 1
+            )
+
+            fresh, age_seconds = run_summarization.calendar_is_fresh(
+                str(calendar), now=now
+            )
+
+            assert fresh is False
+            assert age_seconds > run_summarization.CALENDAR_MAX_AGE_SECONDS
+
+    def test_rejects_calendar_timestamp_far_in_future(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Future meeting\n')
+            now = calendar.stat().st_mtime - 301
+
+            fresh, _ = run_summarization.calendar_is_fresh(
+                str(calendar), now=now
+            )
+
+            assert fresh is False
+
+    def test_rejects_untracked_calendar_inside_git_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Untracked meeting\n')
+
+            fresh, _ = run_summarization.calendar_is_fresh(
+                str(calendar), now=calendar.stat().st_mtime + 60
+            )
+
+            assert fresh is False
+
+    def test_rejects_dirty_calendar_inside_git_repo(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(['git', 'init', '-q'], cwd=tmpdir, check=True)
+            calendar = Path(tmpdir) / 'calendar.org'
+            calendar.write_text('* Committed meeting\n')
+            subprocess.run(['git', 'add', 'calendar.org'], cwd=tmpdir, check=True)
+            subprocess.run(
+                [
+                    'git',
+                    '-c',
+                    'user.name=Test User',
+                    '-c',
+                    'user.email=test@example.com',
+                    'commit',
+                    '-q',
+                    '-m',
+                    'Add calendar',
+                ],
+                cwd=tmpdir,
+                check=True,
+            )
+            calendar.write_text('* Uncommitted meeting\n')
+
+            fresh, _ = run_summarization.calendar_is_fresh(
+                str(calendar), now=calendar.stat().st_mtime + 60
+            )
+
+            assert fresh is False
 
 
 class TestWorkspaceArgumentParsing:
@@ -205,8 +290,13 @@ class TestWorkspaceArgumentParsing:
                         with mock.patch('os.makedirs'):
                             # Mock load_prompt_template to avoid file issues
                             with mock.patch.object(run_summarization, 'load_prompt_template', return_value='test'):
-                                with pytest.raises(SystemExit) as exc_info:
-                                    run_summarization.run_summarization()
+                                with mock.patch.object(
+                                    run_summarization,
+                                    'calendar_is_fresh',
+                                    return_value=(True, 0),
+                                ):
+                                    with pytest.raises(SystemExit) as exc_info:
+                                        run_summarization.run_summarization()
                                 
                                 assert exc_info.value.code == 0  # Success exit
                                 call_args = mock_process.call_args

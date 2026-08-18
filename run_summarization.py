@@ -34,6 +34,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Copilot executable path - override with COPILOT_PATH env var for systemd/non-PATH contexts
 COPILOT_PATH = os.environ.get('COPILOT_PATH', 'copilot')
 DEFAULT_COPILOT_MODEL = 'gpt-5.6-terra'
+CALENDAR_MAX_AGE_SECONDS = int(os.environ.get('CALENDAR_MAX_AGE_SECONDS', 6 * 60 * 60))
 
 
 def get_workspace_paths(workspace_dir: str) -> dict:
@@ -68,6 +69,48 @@ def load_prompt_template(prompt_file: str | None, workspace_dir: str) -> str:
     
     with open(prompt_file, 'r', encoding='utf-8') as f:
         return f.read()
+
+
+def get_calendar_updated_at(calendar_path: str) -> float:
+    """Return the calendar's last committed update time, or its mtime outside git."""
+    path = Path(calendar_path).resolve()
+    try:
+        worktree = subprocess.run(
+            ['git', '-C', str(path.parent), 'rev-parse', '--is-inside-work-tree'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if worktree.returncode != 0 or worktree.stdout.strip() != 'true':
+            return path.stat().st_mtime
+
+        status = subprocess.run(
+            ['git', '-C', str(path.parent), 'status', '--porcelain', '--', path.name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return 0
+
+        result = subprocess.run(
+            ['git', '-C', str(path.parent), 'log', '-1', '--format=%ct', '--', path.name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            return float(result.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    return 0
+
+
+def calendar_is_fresh(calendar_path: str, *, now: float | None = None) -> tuple[bool, float]:
+    """Reject calendar data old enough to make participant identity unsafe."""
+    current_time = _time.time() if now is None else now
+    age_seconds = current_time - get_calendar_updated_at(calendar_path)
+    return -300 <= age_seconds <= CALENDAR_MAX_AGE_SECONDS, age_seconds
 
 
 def format_calendar_for_prompt(calendar_entries: list[dict], meeting_date: str) -> str:
@@ -1479,7 +1522,16 @@ def run_summarization():
     if not args.no_calendar:
         potential_calendar = os.path.join(paths['workspace'], 'calendar.org')
         if os.path.exists(potential_calendar):
-            calendar_path = potential_calendar
+            fresh, age_seconds = calendar_is_fresh(potential_calendar)
+            if fresh:
+                calendar_path = potential_calendar
+            else:
+                age_hours = age_seconds / 3600
+                print(
+                    f"Warning: Calendar enrichment disabled because {potential_calendar} "
+                    "does not contain a safe recent version "
+                    f"(computed age: {age_hours:.1f} hours)."
+                )
     
     # Load prompt template
     prompt_template = load_prompt_template(args.prompt, workspace_dir)

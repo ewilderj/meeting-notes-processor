@@ -462,9 +462,12 @@ curl -X POST http://localhost:9876/calendar \
   --data-binary @calendar.org
 ```
 
-When `calendar.org` exists in your data repo, `run_summarization.py` automatically uses it to:
+When a recently updated `calendar.org` exists in your data repo, `run_summarization.py` automatically uses it to:
 - Match transcripts to calendar entries by time and participants
 - Correct speaker misidentification in transcripts
+
+Calendar data older than six hours is ignored rather than treated as authoritative
+identity evidence. Set `CALENDAR_MAX_AGE_SECONDS` to change that safety window.
 - Add accurate meeting times and attendee information
 
 ---
@@ -501,7 +504,11 @@ The `calendar.org` file uses standard org-mode format. Each entry looks like:
 
 ### Enabling/Disabling
 
-Calendar integration is **enabled by default** when `calendar.org` exists in your data repo. Control it with CLI flags:
+Calendar integration is **enabled by default** when `calendar.org` exists in your
+data repo and its latest git commit is no more than six hours old. Outside a git
+repository, the file modification time is used. Stale calendar data is skipped
+with a warning. In a git repository, uncommitted or untracked calendar data is
+also rejected. Control calendar integration with CLI flags:
 
 ```bash
 # Default: calendar enabled (if calendar.org exists)
