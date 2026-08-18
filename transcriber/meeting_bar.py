@@ -357,9 +357,9 @@ def _audiomxd_session_active(
         transition.
 
     Algorithm:
-      1. Fetch all audiomxd events in the last 120s mentioning app_name and
-         isRecording (these multi-line events include a bracketed summary
-         'sessionID: 0x...  isRecording: true/false').
+      1. Fetch all audiomxd events in the last 120s mentioning app_name.
+         Filtering on isRecording would hide the newer MXCoreSession transition
+         events even though their rendered log line contains updateIsRecording.
       2. Walk chronologically, recording the latest state per sessionID.
       3. Merge parsed states into an app-level cache so a true session remains
          active across polling windows until that same session reports false.
@@ -397,7 +397,7 @@ def _audiomxd_session_active(
         try:
             result = subprocess.run(
                 ["log", "show", "--last", f"{log_window_seconds}s",
-                 "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}" AND eventMessage CONTAINS "isRecording"',
+                 "--predicate", f'process == "audiomxd" AND eventMessage CONTAINS "{app_name}"',
                  "--style", "compact"],
                 capture_output=True, text=True, timeout=15,
             )

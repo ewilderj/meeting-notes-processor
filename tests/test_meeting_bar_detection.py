@@ -371,6 +371,7 @@ def test_native_teams_detection_recovers_active_session_after_restart(monkeypatc
     assert meeting_bar.detect_teams_meeting() is True
     assert meeting_bar.detect_teams_meeting() is True
     assert "21600s" in commands[0]
+    assert 'eventMessage CONTAINS "isRecording"' not in commands[0]
     assert "120s" in commands[1]
 
 
