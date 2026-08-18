@@ -313,6 +313,9 @@ def _teams_process_running() -> bool:
 _AUDIOMXD_SESSION_RE = re.compile(
     r"sessionID:\s*(0x[0-9a-fA-F]+).*?isRecording:\s*(true|false)"
 )
+_AUDIOMXD_TRANSITION_RE = re.compile(
+    r"MXCoreSession\s+sid:(0x[0-9a-fA-F]+).*?\b(starting|stopping)\s+recording\b"
+)
 _AUDIOMXD_WINDOW_SECONDS = 120
 _AUDIOMXD_END_QUERY_TTL_SECONDS = float(os.getenv("AUDIOMXD_END_QUERY_TTL_SECONDS", "15"))
 _AUDIOMXD_SESSION_STATES: dict[str, dict[str, bool]] = {}
@@ -391,6 +394,10 @@ def _audiomxd_session_active(
             m = _AUDIOMXD_SESSION_RE.search(line)
             if m:
                 session_states[m.group(1).lower()] = (m.group(2) == "true")
+                continue
+            m = _AUDIOMXD_TRANSITION_RE.search(line)
+            if m:
+                session_states[m.group(1).lower()] = (m.group(2) == "starting")
         _AUDIOMXD_QUERY_CACHE[cache_key] = (now, session_states)
 
     if not session_states:

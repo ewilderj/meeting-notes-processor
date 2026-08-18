@@ -77,6 +77,45 @@ def _audiomxd_output(*states: tuple[str, bool]) -> str:
     return "\n".join(lines)
 
 
+def _audiomxd_transition_output(*states: tuple[str, bool]) -> str:
+    lines = []
+    for session_id, is_recording in states:
+        transition = "starting" if is_recording else "stopping"
+        lines.append(
+            "MXCoreSession "
+            f"sid:{session_id}, Microsoft Teams (27743), 'prim' "
+            f"with category(PlayAndRecord)/mode(Default) {transition} recording"
+        )
+    return "\n".join(lines)
+
+
+def test_audiomxd_start_detection_parses_mxcoresession_transition(monkeypatch):
+    """Current Teams builds can emit transitions without bracketed state summaries."""
+    meeting_bar._AUDIOMXD_SESSION_STATES.clear()
+    meeting_bar._AUDIOMXD_QUERY_CACHE.clear()
+    output = "\n".join(
+        [
+            _audiomxd_transition_output(("0x2e0074", True)),
+            _audiomxd_transition_output(("0x2e0076", True)),
+            _audiomxd_transition_output(("0x2e0076", False)),
+        ]
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(output),
+    )
+
+    assert (
+        meeting_bar._audiomxd_session_active(
+            "Microsoft Teams",
+            default_if_no_entries=False,
+            use_cached_sessions=False,
+        )
+        is True
+    )
+
+
 def test_audiomxd_end_detection_keeps_cached_true_session(monkeypatch):
     """Unrelated Teams false side sessions should not stop a live call."""
     meeting_bar._AUDIOMXD_SESSION_STATES.clear()
