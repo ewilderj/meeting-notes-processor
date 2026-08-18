@@ -655,9 +655,22 @@ def calendar():
                     logger.info(f"Pre-calendar sync: {msg}")
                 except Exception as e:
                     logger.warning(f"Pre-calendar sync failed: {e}")
+                    return jsonify({
+                        'status': 'error',
+                        'message': f'Calendar repository sync failed: {e}',
+                    }), 503
+                if msg.startswith('git pull failed:'):
+                    return jsonify({
+                        'status': 'error',
+                        'message': msg,
+                    }), 503
 
             # Write calendar.org
             calendar_path = os.path.join(agent.repo_dir, 'calendar.org')
+            previous_content = None
+            if os.path.exists(calendar_path):
+                with open(calendar_path, 'r', encoding='utf-8') as f:
+                    previous_content = f.read()
             with open(calendar_path, 'w', encoding='utf-8') as f:
                 f.write(calendar_content)
 
@@ -680,10 +693,38 @@ def calendar():
                     'message': commit_msg,
                 }
 
-                if commit_ok and agent.git_auto_push:
+                if not commit_ok:
+                    status = agent._run_git(
+                        ['status', '--porcelain', '--', 'calendar.org'],
+                        timeout=10,
+                    )
+                    if status.returncode != 0 or status.stdout.strip():
+                        if previous_content is None:
+                            os.unlink(calendar_path)
+                        else:
+                            with open(calendar_path, 'w', encoding='utf-8') as f:
+                                f.write(previous_content)
+                        agent._run_git(
+                            ['restore', '--staged', '--', 'calendar.org'],
+                            timeout=10,
+                        )
+                        logger.error(f"Calendar commit failed: {commit_msg}")
+                        return jsonify({
+                            'status': 'error',
+                            'message': commit_msg,
+                        }), 500
+                    response_data['git']['message'] = 'Calendar already current'
+
+                if agent.git_auto_push:
                     push_ok, push_msg = agent.git_push()
                     response_data['git']['pushed'] = push_ok
                     response_data['git']['push_message'] = push_msg
+                    if not push_ok:
+                        return jsonify({
+                            'status': 'error',
+                            'message': push_msg,
+                            'git': response_data['git'],
+                        }), 502
 
         return jsonify(response_data), 200
 

@@ -507,6 +507,72 @@ class TestWebhookEndpoint:
         assert response.status_code == 200
         assert len(sync_called) >= 1  # Sync was called at least once
 
+    def test_calendar_accepts_unchanged_content(self, test_client, monkeypatch):
+        import meetingnotesd
+
+        monkeypatch.setattr(meetingnotesd.agent, "sync_enabled", False)
+        calendar = "* Current meeting\n"
+
+        first = test_client.post(
+            "/calendar",
+            data=calendar,
+            content_type="text/plain",
+        )
+        second = test_client.post(
+            "/calendar",
+            data=calendar,
+            content_type="text/plain",
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.get_json()["git"] == {
+            "committed": False,
+            "message": "Calendar already current",
+        }
+
+    def test_calendar_commit_failure_restores_previous_content(
+        self, test_client, temp_workspace, monkeypatch
+    ):
+        import meetingnotesd
+
+        monkeypatch.setattr(meetingnotesd.agent, "sync_enabled", False)
+        calendar_path = temp_workspace["data_repo"] / "calendar.org"
+        calendar_path.write_text("* Previous meeting\n")
+        subprocess.run(
+            ["git", "add", "calendar.org"],
+            cwd=temp_workspace["data_repo"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Add calendar"],
+            cwd=temp_workspace["data_repo"],
+            capture_output=True,
+            check=True,
+        )
+        monkeypatch.setattr(
+            meetingnotesd.agent,
+            "git_commit",
+            lambda *_: (False, "Git commit failed: test failure"),
+        )
+
+        response = test_client.post(
+            "/calendar",
+            data="* Replacement meeting\n",
+            content_type="text/plain",
+        )
+
+        assert response.status_code == 500
+        assert calendar_path.read_text() == "* Previous meeting\n"
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", "calendar.org"],
+            cwd=temp_workspace["data_repo"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert status.stdout == ""
+
 
 class TestBackgroundSync:
     """Tests for background sync thread."""
