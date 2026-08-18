@@ -467,7 +467,8 @@ When a recently updated `calendar.org` exists in your data repo, `run_summarizat
 - Correct speaker misidentification in transcripts
 
 Calendar data older than six hours is ignored rather than treated as authoritative
-identity evidence. Set `CALENDAR_MAX_AGE_SECONDS` to change that safety window.
+identity evidence. Set `CALENDAR_PATH` to use a calendar outside the data workspace,
+or `CALENDAR_MAX_AGE_SECONDS` to change the safety window.
 - Add accurate meeting times and attendee information
 
 ---

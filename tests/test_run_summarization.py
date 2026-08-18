@@ -145,6 +145,27 @@ class TestLoadPromptTemplate:
 
 
 class TestCalendarFreshness:
+    def test_uses_configured_calendar_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            configured = Path(workspace).parent / 'shared-calendar.org'
+            with mock.patch.dict(
+                os.environ,
+                {'CALENDAR_PATH': str(configured)},
+                clear=False,
+            ):
+                assert (
+                    run_summarization.get_calendar_path(workspace)
+                    == os.path.abspath(configured)
+                )
+
+    def test_defaults_calendar_to_workspace(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('CALENDAR_PATH', None)
+                assert run_summarization.get_calendar_path(workspace) == str(
+                    Path(workspace) / 'calendar.org'
+                )
+
     def test_accepts_recent_non_git_calendar(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             calendar = Path(tmpdir) / 'calendar.org'

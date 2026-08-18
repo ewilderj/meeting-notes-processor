@@ -47,6 +47,14 @@ def get_workspace_paths(workspace_dir: str) -> dict:
     }
 
 
+def get_calendar_path(workspace_dir: str) -> str:
+    """Return the configured calendar source or the workspace default."""
+    configured_path = os.environ.get('CALENDAR_PATH')
+    if configured_path:
+        return os.path.abspath(os.path.expanduser(configured_path))
+    return os.path.join(workspace_dir, 'calendar.org')
+
+
 def get_default_prompt_file(workspace_dir: str) -> str:
     """Return the default prompt file path, preferring workspace over script directory."""
     workspace_prompt = os.path.join(workspace_dir, 'prompt.txt')
@@ -1520,7 +1528,7 @@ def run_summarization():
     # Determine calendar path
     calendar_path = None
     if not args.no_calendar:
-        potential_calendar = os.path.join(paths['workspace'], 'calendar.org')
+        potential_calendar = get_calendar_path(paths['workspace'])
         if os.path.exists(potential_calendar):
             fresh, age_seconds = calendar_is_fresh(potential_calendar)
             if fresh:

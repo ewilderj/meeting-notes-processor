@@ -43,6 +43,10 @@
         <!-- Optional: specify config file path (defaults to ./config.yaml) -->
         <!-- <key>WEBHOOK_CONFIG</key> -->
         <!-- <string>/path/to/config.yaml</string> -->
+
+        <!-- Optional: use a calendar outside the data repository -->
+        <!-- <key>CALENDAR_PATH</key> -->
+        <!-- <string>/Users/CHANGEME/gtd/outlook.org</string> -->
     </dict>
 
     <!-- Run at load (boot/login) -->
