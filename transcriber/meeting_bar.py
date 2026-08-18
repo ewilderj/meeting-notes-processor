@@ -66,12 +66,15 @@ CONFIRM_POLLS = int(os.getenv("MEETING_CONFIRM_POLLS", "3"))
 MANUAL_START_AUDIO_LOOKBACK_SECONDS = int(
     os.getenv("MANUAL_START_AUDIO_LOOKBACK_SECONDS", "600")
 )
-AUDIOMXD_STARTUP_LOOKBACK_SECONDS = int(
-    os.getenv("AUDIOMXD_STARTUP_LOOKBACK_SECONDS", "21600")
-)
 RECORDING_REMINDER_SECONDS = int(os.getenv("MEETING_RECORDING_REMINDER_SECONDS", "120"))
 ROOM_RECORDING_END_GRACE_SECONDS = int(
     os.getenv("ROOM_RECORDING_END_GRACE_SECONDS", "120")
+)
+STANDARD_RECORDING_END_GRACE_SECONDS = int(
+    os.getenv("STANDARD_RECORDING_END_GRACE_SECONDS", "30")
+)
+ADOPTED_RECORDING_MAX_SECONDS = int(
+    os.getenv("ADOPTED_RECORDING_MAX_SECONDS", "14400")
 )
 
 # Calendar org file for meeting title lookup (optional)
@@ -287,13 +290,10 @@ def detect_teams_meeting() -> bool:
         if not _teams_process_running():
             _clear_audiomxd_app_state("Microsoft Teams")
             return False
-        bootstrap = "Microsoft Teams" not in _AUDIOMXD_BOOTSTRAPPED_APPS
         return _audiomxd_session_active(
             "Microsoft Teams",
             default_if_no_entries=False,
-            use_cached_sessions=True,
-            window_seconds=AUDIOMXD_STARTUP_LOOKBACK_SECONDS if bootstrap else None,
-            query_ttl_seconds=0,
+            use_cached_sessions=False,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -323,13 +323,11 @@ _AUDIOMXD_WINDOW_SECONDS = 120
 _AUDIOMXD_END_QUERY_TTL_SECONDS = float(os.getenv("AUDIOMXD_END_QUERY_TTL_SECONDS", "15"))
 _AUDIOMXD_SESSION_STATES: dict[str, dict[str, bool]] = {}
 _AUDIOMXD_QUERY_CACHE: dict[tuple[str, int], tuple[float, dict[str, bool]]] = {}
-_AUDIOMXD_BOOTSTRAPPED_APPS: set[str] = set()
 
 
 def _clear_audiomxd_app_state(app_name: str) -> None:
     """Forget audio sessions when the owning application is no longer running."""
     _AUDIOMXD_SESSION_STATES.pop(app_name, None)
-    _AUDIOMXD_BOOTSTRAPPED_APPS.discard(app_name)
     for cache_key in [key for key in _AUDIOMXD_QUERY_CACHE if key[0] == app_name]:
         _AUDIOMXD_QUERY_CACHE.pop(cache_key, None)
 
@@ -405,6 +403,13 @@ def _audiomxd_session_active(
             logger.debug(f"audiomxd log check failed: {e}")
             return default_if_no_entries
 
+        if result.returncode != 0:
+            logger.warning(
+                f"audiomxd log query failed for {app_name}: "
+                f"{result.stderr.strip() or f'exit {result.returncode}'}"
+            )
+            return default_if_no_entries
+
         # Chronological scan; latest event per sessionID wins.
         session_states = {}
         for line in result.stdout.splitlines():
@@ -416,8 +421,6 @@ def _audiomxd_session_active(
             if m:
                 session_states[m.group(1).lower()] = (m.group(2) == "starting")
         _AUDIOMXD_QUERY_CACHE[cache_key] = (now, session_states)
-        if log_window_seconds == AUDIOMXD_STARTUP_LOOKBACK_SECONDS:
-            _AUDIOMXD_BOOTSTRAPPED_APPS.add(app_name)
 
     if not session_states:
         cached = _AUDIOMXD_SESSION_STATES.get(app_name, {})
@@ -534,7 +537,16 @@ def find_mic_device() -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_SENDER_PROCESS: subprocess.Popen | None = None
+
+
 def _sender_running() -> int | None:
+    global _SENDER_PROCESS
+    if _SENDER_PROCESS is not None and _SENDER_PROCESS.poll() is not None:
+        if PID_FILE.exists():
+            PID_FILE.unlink(missing_ok=True)
+        _SENDER_PROCESS = None
+        return None
     if not PID_FILE.exists():
         return None
     try:
@@ -557,6 +569,7 @@ def _sender_running() -> int | None:
 
 
 def start_sender(device: str, mic: str | None = None) -> int:
+    global _SENDER_PROCESS
     existing = _sender_running()
     if existing:
         logger.info(f"VBAN sender already running (PID {existing})")
@@ -574,6 +587,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
         )
     finally:
         log_fh.close()
+    _SENDER_PROCESS = proc
     PID_FILE.write_text(str(proc.pid))
     mode = f"mixed ({device} + {mic})" if mic else device
     logger.info(f"VBAN sender started (PID {proc.pid}) → {mode}")
@@ -581,27 +595,36 @@ def start_sender(device: str, mic: str | None = None) -> int:
 
 
 def stop_sender():
+    global _SENDER_PROCESS
     pid = _sender_running()
     if pid:
         try:
             os.killpg(pid, signal.SIGTERM)
-            for _ in range(20):
+            if _SENDER_PROCESS is not None and _SENDER_PROCESS.pid == pid:
                 try:
-                    os.kill(pid, 0)
-                    time.sleep(0.1)
-                except ProcessLookupError:
-                    break
+                    _SENDER_PROCESS.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"VBAN sender PID {pid} did not stop; escalating")
+                    os.killpg(pid, signal.SIGKILL)
+                    _SENDER_PROCESS.wait(timeout=2)
             else:
-                logger.warning(f"VBAN sender PID {pid} did not stop; escalating")
-                os.killpg(pid, signal.SIGKILL)
                 for _ in range(20):
                     try:
                         os.kill(pid, 0)
                         time.sleep(0.1)
                     except ProcessLookupError:
                         break
-        except ProcessLookupError:
-            pass
+                else:
+                    logger.warning(f"VBAN sender PID {pid} did not stop; escalating")
+                    os.killpg(pid, signal.SIGKILL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            if not isinstance(e, OSError) or e.errno not in (3,):
+                logger.warning(f"VBAN sender shutdown signal failed for PID {pid}: {e}")
+        finally:
+            if _SENDER_PROCESS is not None and _SENDER_PROCESS.pid == pid:
+                _SENDER_PROCESS.poll()
+                _SENDER_PROCESS = None
+
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -959,14 +982,34 @@ class MeetingBarApp(rumps.App):
             logger.warning("Active transcriber recording has an invalid meeting_start")
 
         capture_mode = recording.get("capture_mode", "standard")
+        if capture_mode not in ("standard", "room"):
+            logger.warning(f"Unknown capture mode {capture_mode!r}; using standard")
+            capture_mode = "standard"
         calendar_meeting = current_calendar_meeting(now)
         detected_app = detect_meeting()
-        recording_app = detected_app or ("Room" if capture_mode == "room" else "External")
+        recording_app = detected_app or (
+            "Room"
+            if capture_mode == "room"
+            else ("Calendar" if calendar_meeting else "External")
+        )
         expected_end = (
             calendar_meeting.end
-            if capture_mode == "room" and calendar_meeting
-            else None
+            if calendar_meeting
+            else started_at + datetime.timedelta(seconds=ADOPTED_RECORDING_MAX_SECONDS)
         )
+
+        if not _sender_running():
+            if capture_mode == "room":
+                device_name = find_mic_device()
+                quality = "room"
+            else:
+                device_name, quality = find_best_device()
+            if device_name:
+                mic_name = find_mic_device() if quality == "full" else None
+                start_sender(device_name, mic=mic_name)
+                logger.warning("Restarted missing VBAN sender for active recording")
+            else:
+                logger.error("Active recording has no VBAN sender or suitable audio device")
 
         with self._lock:
             if self._recording or self._busy:
@@ -1014,12 +1057,19 @@ class MeetingBarApp(rumps.App):
             capture_mode = self._recording_capture_mode
             expected_end = self._recording_expected_end
 
+        deadline_grace = (
+            ROOM_RECORDING_END_GRACE_SECONDS
+            if capture_mode == "room"
+            else STANDARD_RECORDING_END_GRACE_SECONDS
+        )
+        if is_recording and expected_end and now >= expected_end + datetime.timedelta(
+            seconds=deadline_grace
+        ):
+            logger.info(f"Recording reached recovery deadline (was: {rec_app})")
+            threading.Thread(target=self._do_stop, daemon=True).start()
+            return
+
         if is_recording and capture_mode == "room":
-            if expected_end and now >= expected_end + datetime.timedelta(
-                seconds=ROOM_RECORDING_END_GRACE_SECONDS
-            ):
-                logger.info(f"Room meeting reached calendar end (was: {rec_app})")
-                threading.Thread(target=self._do_stop, daemon=True).start()
             return
 
         # App-based meeting detection can be disabled without disabling
@@ -1111,6 +1161,13 @@ class MeetingBarApp(rumps.App):
             self._busy = True
 
         try:
+            if expected_end is None and auto:
+                if calendar_meeting:
+                    expected_end = calendar_meeting.end
+                else:
+                    expected_end = datetime.datetime.now() + datetime.timedelta(
+                        seconds=ADOPTED_RECORDING_MAX_SECONDS
+                    )
             logger.info(
                 f"Starting recording: '{title}' ({app}, auto={auto}, capture={capture_mode})"
             )

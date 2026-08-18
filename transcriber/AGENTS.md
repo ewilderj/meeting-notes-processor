@@ -150,10 +150,11 @@ or mDNS).
 | `VBAN_PORT` | `6980` | |
 | `MEETING_POLL_INTERVAL` | `5` | Seconds between detection checks |
 | `AUDIOMXD_END_QUERY_TTL_SECONDS` | `15` | Seconds to cache expensive Teams/Edge audiomxd `log show` queries for end detection only |
-| `AUDIOMXD_STARTUP_LOOKBACK_SECONDS` | `21600` | One-time Teams audio-log replay after menu-bar startup so an active call survives a recorder restart |
+| `ADOPTED_RECORDING_MAX_SECONDS` | `14400` | Safety deadline for an adopted recording when no current calendar end is available |
 | `MEETING_CALENDAR_ORG` | `~/gtd/outlook.org` | Org-mode calendar for title lookup |
 | `MEETING_RECORDING_REMINDER_SECONDS` | `120` | Show a missed-recording reminder after this many seconds in a calendar meeting |
 | `ROOM_RECORDING_END_GRACE_SECONDS` | `120` | Keep room recordings running this many seconds past the calendar end |
+| `STANDARD_RECORDING_END_GRACE_SECONDS` | `30` | Grace after a scheduled standard recording's calendar end before stopping |
 
 ## Whisper Configuration
 
@@ -183,10 +184,10 @@ Teams 2.x (new Electron) exposes no reliable window titles and
 `AVCaptureDevice` cannot see its mic usage. Detection uses two tiers:
 
 - **Start detection**: native Teams process tree running (`MSTeams` or Teams
-  2.x WebView/helper processes) AND `audiomxd` recording evidence. On startup,
-  the recorder replays six hours of per-session transitions once, then resumes
-  short-window polling. This lets it recover an already-running call without
-  making every poll expensive.
+  2.x WebView/helper processes) AND fresh `audiomxd` recording evidence.
+  Historical session state is deliberately excluded because Teams may omit a
+  matching stop transition. A restarted menu adopts any active transcriber
+  recording instead of replaying stale Teams events.
   Do not require an exact `MSTeams` binary; current Teams 2.x can expose only
   `com.microsoft.teams2.*` and `Microsoft Teams WebView` helpers.
 
