@@ -7,6 +7,9 @@
 
     <key>ProgramArguments</key>
     <array>
+        <string>/opt/homebrew/bin/gh</string>
+        <string>cfs</string>
+        <string>--</string>
         <string>/opt/homebrew/bin/uv</string>
         <string>run</string>
         <string>/Users/edd/transcriber/vban_recv.py</string>

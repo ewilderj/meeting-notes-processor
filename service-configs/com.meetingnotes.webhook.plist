@@ -7,8 +7,11 @@
 
     <key>ProgramArguments</key>
     <array>
-        <!-- Path to uv - find with: which uv -->
-        <string>/Users/CHANGEME/.local/bin/uv</string>
+        <!-- Stable absolute paths to gh and uv; customize for your installation -->
+        <string>/opt/homebrew/bin/gh</string>
+        <string>cfs</string>
+        <string>--</string>
+        <string>/opt/homebrew/bin/uv</string>
         <string>run</string>
         <string>meetingnotesd.py</string>
     </array>
@@ -23,11 +26,11 @@
         <key>GH_TOKEN</key>
         <string>ghp_CHANGEME</string>
 
-        <!-- PATH must include node (for GitHub Copilot CLI) -->
+        <!-- PATH must include gh, az, uv, and node (for GitHub Copilot CLI) -->
         <!-- If using nvm, find node path with: dirname "$(which node)" -->
         <!-- Example nvm path: /Users/CHANGEME/.nvm/versions/node/v22.x.x/bin -->
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/Users/CHANGEME/.nvm/versions/node/v22.x.x/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/CHANGEME/.nvm/versions/node/v22.x.x/bin</string>
 
         <!-- Alternative: specify copilot path directly (find with: which copilot) -->
         <!-- This is simpler than managing PATH if copilot is the only npm tool needed -->

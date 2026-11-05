@@ -4,6 +4,28 @@ This directory contains configuration files to run the webhook daemon as a prope
 
 ## macOS (launchd)
 
+Python packages are resolved through GitHub Central Feed Service (CFS), configured
+as the sole default index in the repository's `uv.toml`. The plist runs
+`/opt/homebrew/bin/gh cfs -- /opt/homebrew/bin/uv run ...`; customize both absolute
+paths if your tools are installed elsewhere. Its `PATH` must also include Azure
+CLI (`az`), since launchd does not load your shell profile.
+
+Before installing, install the `gh cfs` extension and Azure CLI >=2.54, sign in
+to Azure as the **same macOS user that runs the agent**, and verify feed access:
+
+```bash
+az login --tenant 398a6654-997b-47e9-b12b-9515b896b4de --allow-no-subscriptions
+gh cfs doctor --auth
+gh cfs -- uv run --with pyyaml python -c "import yaml"
+```
+
+`doctor --auth` checks token acquisition, not feed authorization. CFS credentials
+are temporary; do not put them in the plist. If you use custom `AZURE_CONFIG_DIR`
+or `GH_CONFIG_DIR` locations, set those paths in the plist too. Azure sessions
+can expire and require interactive renewal outside launchd. Use `gh cfs -- uv ...`
+for dependency-resolving commands from this repository. There is no project
+`uv.lock`: scripts declare their own PEP 723 dependencies.
+
 1. **Edit the plist file** to set correct paths:
    ```bash
    # Copy and customize
