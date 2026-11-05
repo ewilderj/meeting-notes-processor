@@ -7,6 +7,9 @@
 
     <key>ProgramArguments</key>
     <array>
+        <string>/opt/homebrew/bin/gh</string>
+        <string>cfs</string>
+        <string>--</string>
         <string>/opt/homebrew/bin/uv</string>
         <string>run</string>
         <string>/Users/edd/transcriber/vban_recv.py</string>
@@ -17,6 +20,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>UV_CONFIG_FILE</key>
+        <string>/Users/edd/transcriber/uv-cfs.toml</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>

@@ -42,6 +42,48 @@ This guide covers both the **client** (your laptop) and the **server**. The serv
 
 ## Prerequisites
 
+### CFS package access for launchd
+
+All uv-based LaunchAgent templates (including the obsolete VBAN receiver) run
+`/opt/homebrew/bin/gh cfs -- /opt/homebrew/bin/uv run ...`. Install GitHub CLI,
+the `gh cfs` extension, Azure CLI >=2.54, and uv on **each service host** before
+loading an updated plist. Customize the absolute executable paths and ensure
+`az` is on the plist's `PATH` if not using Apple Silicon Homebrew.
+
+Sign in on each host as the macOS user that runs the LaunchAgent (for example,
+`edd` on pilot, not your laptop user):
+
+```bash
+az login --tenant 398a6654-997b-47e9-b12b-9515b896b4de --allow-no-subscriptions
+gh cfs doctor --auth
+# On pilot (after deploying server/); locally use the matching plist path:
+UV_CONFIG_FILE="$HOME/transcriber/uv-cfs.toml" gh cfs -- uv run --with pyyaml python -c "import yaml"
+```
+
+The last command checks actual package access; `doctor --auth` alone does not.
+launchd does not inherit shell profiles. If authentication uses custom
+`AZURE_CONFIG_DIR` or `GH_CONFIG_DIR` locations, add those paths to the plist's
+environment. Never store CFS tokens in plists. Expired Azure sessions need
+interactive renewal outside launchd.
+
+`service-configs/uv-cfs.toml` configures CFS as the sole default Python index.
+A matching `server/uv-cfs.toml` travels with the independently deployed server
+directory; keep the two index definitions in sync. Each plist selects its config
+through an absolute `UV_CONFIG_FILE` path; customize that path when relocating
+the code. The obsolete VBAN receiver template also expects the deployed server
+config in `~/transcriber/`. Ordinary CLI and CI runs do not auto-discover these
+files and retain their existing index behavior.
+
+For manual CFS commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`.
+Dependencies remain in PEP 723 script metadata; there is no project `uv.lock` to
+regenerate. The menu bar's uv child processes inherit both the explicit config
+and CFS credentials from the wrapper while it is running.
+
+Updating these source templates does not update installed LaunchAgents.
+Restart targets reload the installed plist, not the repository template; apply
+the reviewed plist changes separately when ready. Provisioning does not install
+CFS or establish Azure login automatically.
+
 | Item | Where | Purpose |
 | --- | --- | --- |
 | Mac with Apple Silicon | Laptop | Audio capture and VBAN streaming |

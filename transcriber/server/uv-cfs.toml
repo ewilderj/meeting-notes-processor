@@ -1,0 +1,6 @@
+# This directory is deployed independently to ~/transcriber on pilot.
+[[index]]
+name = "pypi"
+url = "https://pkgs.dev.azure.com/github-cfs/GitHubCFS/_packaging/github-cfs-pypi/pypi/simple/"
+default = true
+authenticate = "always"
