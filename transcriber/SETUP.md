@@ -56,7 +56,8 @@ Sign in on each host as the macOS user that runs the LaunchAgent (for example,
 ```bash
 az login --tenant 398a6654-997b-47e9-b12b-9515b896b4de --allow-no-subscriptions
 gh cfs doctor --auth
-gh cfs -- uv run --with pyyaml python -c "import yaml"
+# On pilot (after deploying server/); locally use the matching plist path:
+UV_CONFIG_FILE="$HOME/transcriber/uv-cfs.toml" gh cfs -- uv run --with pyyaml python -c "import yaml"
 ```
 
 The last command checks actual package access; `doctor --auth` alone does not.
@@ -65,12 +66,18 @@ launchd does not inherit shell profiles. If authentication uses custom
 environment. Never store CFS tokens in plists. Expired Azure sessions need
 interactive renewal outside launchd.
 
-The root `uv.toml` configures CFS as the sole default Python index. A matching
-`server/uv.toml` travels with the independently deployed server directory; keep
-the two index definitions in sync. Use `gh cfs -- uv ...` for package-resolving
-commands. Dependencies remain in PEP 723 script metadata; there is no project
-`uv.lock` to regenerate. The menu bar's uv child processes inherit CFS credentials
-from the wrapper while it is running.
+`service-configs/uv-cfs.toml` configures CFS as the sole default Python index.
+A matching `server/uv-cfs.toml` travels with the independently deployed server
+directory; keep the two index definitions in sync. Each plist selects its config
+through an absolute `UV_CONFIG_FILE` path; customize that path when relocating
+the code. The obsolete VBAN receiver template also expects the deployed server
+config in `~/transcriber/`. Ordinary CLI and CI runs do not auto-discover these
+files and retain their existing index behavior.
+
+For manual CFS commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`.
+Dependencies remain in PEP 723 script metadata; there is no project `uv.lock` to
+regenerate. The menu bar's uv child processes inherit both the explicit config
+and CFS credentials from the wrapper while it is running.
 
 Updating these source templates does not update installed LaunchAgents.
 Restart targets reload the installed plist, not the repository template; apply

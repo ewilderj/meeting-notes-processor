@@ -1,3 +1,4 @@
+# Selected explicitly by LaunchAgents through UV_CONFIG_FILE, not auto-discovered.
 [[index]]
 name = "pypi"
 url = "https://pkgs.dev.azure.com/github-cfs/GitHubCFS/_packaging/github-cfs-pypi/pypi/simple/"

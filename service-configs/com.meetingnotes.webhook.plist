@@ -22,6 +22,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>UV_CONFIG_FILE</key>
+        <string>/Users/CHANGEME/git/meeting-notes-processor/service-configs/uv-cfs.toml</string>
         <!-- Required for git push operations -->
         <key>GH_TOKEN</key>
         <string>ghp_CHANGEME</string>
