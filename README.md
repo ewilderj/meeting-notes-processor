@@ -123,14 +123,17 @@ This separation keeps your notes history clean and lets you update the processor
   - **Google Gemini CLI**: `npm install` (included in package.json)
     - Requires Google AI API key or interactive authentication
 
-macOS LaunchAgents explicitly select GitHub Central Feed Service (CFS) through
-`UV_CONFIG_FILE`; ordinary CLI commands and the GitHub Actions workflow template
-retain their existing package index configuration. For an authenticated local
-CFS run from the repository root, use
-`UV_CONFIG_FILE="$PWD/service-configs/uv-cfs.toml" gh cfs -- uv run run_summarization.py`.
+Services run prepared virtual environments directly, without uv sync or Azure
+authentication at runtime. Run `make runtime` before installing/updating the
+webhook; see the [transcriber guide](transcriber/SETUP.md#installation-only-cfs-package-access)
+for menu bar and transcription server preparation. These installation steps use
+GitHub Central Feed Service (CFS); ordinary CLI commands and the GitHub Actions
+workflow template retain their existing package index configuration.
 See [service setup](service-configs/README.md#macos-launchd) for authentication
 and launchd prerequisites. Migrating CI to CFS separately requires a CI identity,
-not an employee's local Azure login.
+not an employee's local Azure login. The standard `uv run run_summarization.py`
+standalone configuration is translated to the daemon's prepared Python
+interpreter, so existing configurations do not trigger uv at runtime.
 
 ---
 

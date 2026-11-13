@@ -12,9 +12,9 @@ User=CHANGEME
 # CHANGEME: Path to your meeting-notes-processor repo
 WorkingDirectory=/home/CHANGEME/git/meeting-notes-processor
 
-# CHANGEME: Path to uv (find with: which uv)
+# Prepared by make runtime; no package resolution at startup
 # CHANGEME: Set your GitHub token
-ExecStart=/home/CHANGEME/.local/bin/uv run meetingnotesd.py
+ExecStart=/home/CHANGEME/git/meeting-notes-processor/.venv/bin/python meetingnotesd.py
 Environment="GH_TOKEN=ghp_CHANGEME"
 
 # CHANGEME: Path to copilot CLI wrapper script

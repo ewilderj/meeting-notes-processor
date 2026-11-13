@@ -5,6 +5,7 @@
 #     "rumps>=0.4.0",
 #     "requests>=2.31.0",
 #     "sounddevice>=0.5.0",
+#     "numpy>=1.26.0",
 # ]
 # ///
 """
@@ -39,6 +40,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -574,7 +576,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
     if existing:
         logger.info(f"VBAN sender already running (PID {existing})")
         return existing
-    cmd = ["uv", "run", str(VBAN_SEND_SCRIPT), "-d", device, "-t", VBAN_TARGET_HOST, "-p", str(VBAN_PORT)]
+    cmd = [sys.executable, str(VBAN_SEND_SCRIPT), "-d", device, "-t", VBAN_TARGET_HOST, "-p", str(VBAN_PORT)]
     if mic:
         cmd.extend(["--mic", mic])
     log_fh = open(LOG_FILE, "w")

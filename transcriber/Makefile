@@ -15,7 +15,7 @@ PLIST := $(SERVICE_LABEL).plist
        meeting-bar-install meeting-bar-restart meeting-bar-local meeting-bar-pilot \
        meeting-bar-logs meeting-bar-status \
        local-transcriber-install local-transcriber-restart local-transcriber-stop \
-       local-transcriber-status local-transcriber-logs
+       local-transcriber-status local-transcriber-logs runtime local-transcriber-runtime
 
 # ---------------------------------------------------------------------------
 # Local Build
@@ -36,8 +36,19 @@ MEETING_BAR_PLIST := $(MEETING_BAR_LABEL).plist
 LOCAL_TRANSCRIBER_LABEL := com.transcriber.local
 LOCAL_TRANSCRIBER_PLIST := $(LOCAL_TRANSCRIBER_LABEL).plist
 
-meeting-bar-install:  ## Install meeting_bar.py as a launchd agent
-	cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+runtime:  ## Prepare menu bar, CLI, and VBAN dependencies through CFS
+	bash server/prepare-runtime.sh "$(CURDIR)/.venv" "$(abspath ../service-configs/uv-cfs.toml)" meeting_bar.py meeting.py vban/vban_send.py vban/vban_recv.py
+
+local-transcriber-runtime:  ## Prepare local server dependencies through CFS
+	bash server/prepare-runtime.sh
+
+meeting-bar-install: runtime  ## Install meeting_bar.py as a launchd agent
+	@mkdir -p ~/Library/LaunchAgents
+	@test -f ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) || cp $(MEETING_BAR_PLIST) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null
+	plutil -replace ProgramArguments -json '["$(CURDIR)/.venv/bin/python", "$(CURDIR)/meeting_bar.py"]' ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	plutil -replace WorkingDirectory -string "$(CURDIR)" ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
+	@plutil -remove EnvironmentVariables.UV_CONFIG_FILE ~/Library/LaunchAgents/$(MEETING_BAR_PLIST) 2>/dev/null || true
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(MEETING_BAR_PLIST)
 	@sleep 2
 	@launchctl list | grep -q $(MEETING_BAR_LABEL) && echo "meeting-bar installed and running" || echo "WARNING: service not loaded"
@@ -78,10 +89,14 @@ meeting-bar-status:  ## Show meeting_bar.py service status
 	@echo "---"
 	@tail -5 ~/Library/Logs/meeting-bar.log 2>/dev/null || echo "No log file yet"
 
-local-transcriber-install:  ## Install the local transcriber launchd agent
-	cp $(LOCAL_TRANSCRIBER_PLIST) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+local-transcriber-install: local-transcriber-runtime  ## Install the local transcriber launchd agent
+	@mkdir -p ~/Library/LaunchAgents
+	@test -f ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) || cp $(LOCAL_TRANSCRIBER_PLIST) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
 	-launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null
 	@sleep 1
+	plutil -replace ProgramArguments -json '["$(CURDIR)/server/.venv/bin/python", "$(CURDIR)/server/transcriber.py"]' ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	plutil -replace WorkingDirectory -string "$(CURDIR)/server" ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
+	@plutil -remove EnvironmentVariables.UV_CONFIG_FILE ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST) 2>/dev/null || true
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(LOCAL_TRANSCRIBER_PLIST)
 	@sleep 2
 	@launchctl list | grep -q $(LOCAL_TRANSCRIBER_LABEL) && echo "local transcriber installed and running" || echo "WARNING: local transcriber not loaded"
@@ -162,6 +177,8 @@ provision-whisper:
 
 provision-service:
 	@echo "=== [4/4] launchd service ==="
+	rsync -avz --delete --exclude='recordings/' --exclude='.venv/' server/ $(REMOTE_HOST):$(REMOTE_DIR)/
+	@ssh $(REMOTE_HOST) 'cd $(REMOTE_DIR) && bash prepare-runtime.sh'
 	@scp $(PLIST) $(REMOTE_HOST):~/Library/LaunchAgents/$(PLIST)
 	@ssh $(REMOTE_HOST) 'bash -s' < setup/04-service.sh
 
@@ -171,10 +188,14 @@ provision-service:
 
 deploy:
 	@echo "=== Deploying server to pilot ==="
-	rsync -avz --delete --exclude='recordings/' server/ $(REMOTE_HOST):$(REMOTE_DIR)/
+	rsync -avz --delete --exclude='recordings/' --exclude='.venv/' server/ $(REMOTE_HOST):$(REMOTE_DIR)/
+	@ssh $(REMOTE_HOST) 'cd $(REMOTE_DIR) && bash prepare-runtime.sh'
 	@echo "=== Restarting service ==="
 	@ssh $(REMOTE_HOST) '\
-		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(PLIST) 2>/dev/null; \
+		set -e; \
+		cd $(REMOTE_DIR); \
+		plutil -replace ProgramArguments -json "[\"$$PWD/.venv/bin/python\", \"$$PWD/transcriber.py\"]" ~/Library/LaunchAgents/$(PLIST); \
+		launchctl bootout gui/$$(id -u) ~/Library/LaunchAgents/$(PLIST) 2>/dev/null || true; \
 		sleep 1; \
 		launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(PLIST); \
 		sleep 2; \

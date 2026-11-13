@@ -18,6 +18,12 @@ When working with separated repositories:
 
 **Always use `uv` for Python package management and execution.**
 
+Installed services are an exception for execution: launchd/systemd and their
+Python child processes use persistent `.venv/bin/python` directly, with no uv
+sync or package download at runtime. Run `make runtime` before installing or
+updating the webhook; transcriber environments have their own preparation
+targets. Preparation uses CFS-authenticated uv and existing PEP 723 metadata.
+
 ### Running Python Scripts
 
 Scripts in this project use **PEP 723 inline script metadata** to declare dependencies. This allows `uv` to automatically detect and install required packages.

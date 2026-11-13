@@ -47,6 +47,7 @@ import subprocess
 import threading
 import time
 import shlex
+import sys
 import argparse
 
 import requests
@@ -136,6 +137,17 @@ class RepoAgent:
         # Standalone mode: process transcripts locally instead of dispatching to GitHub Actions
         self.standalone_enabled = bool(_get_nested(config, ['processing', 'standalone', 'enabled'], False))
         self.standalone_command = _get_nested(config, ['processing', 'standalone', 'command'], 'uv run run_summarization.py --git')
+        standalone_args = shlex.split(self.standalone_command or '')
+        if (
+            len(standalone_args) >= 3
+            and Path(standalone_args[0]).name == 'uv'
+            and standalone_args[1:3] == ['run', 'run_summarization.py']
+        ):
+            self.standalone_command = shlex.join([
+                sys.executable,
+                str(Path(__file__).with_name('run_summarization.py')),
+                *standalone_args[3:],
+            ])
         self.standalone_working_directory = _get_nested(config, ['processing', 'standalone', 'working_directory'], '.')
         self.standalone_timeout_seconds = int(_get_nested(config, ['processing', 'standalone', 'timeout_seconds'], 1800))
         # Async mode: return immediately after saving file, process in background

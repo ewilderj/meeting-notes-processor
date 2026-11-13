@@ -10,7 +10,7 @@ REMOTE_HOST := edd@nuctu
 REMOTE_DIR := ~/git/meeting-notes-processor
 SERVICE := meetingnotes-webhook
 
-.PHONY: deploy status logs restart ssh push pull
+.PHONY: deploy status logs restart ssh push pull runtime
 
 # ---------------------------------------------------------------------------
 # Deployment
@@ -23,7 +23,10 @@ push:  ## Push local changes to remote
 
 pull:  ## Pull latest code on nuctu
 	@echo "=== Pulling on nuctu ==="
-	@ssh $(REMOTE_HOST) 'cd $(REMOTE_DIR) && git pull --ff-only'
+	@ssh $(REMOTE_HOST) 'cd $(REMOTE_DIR) && git pull --ff-only && make runtime'
+
+runtime:  ## Install webhook and summarizer dependencies through CFS before starting services
+	bash transcriber/server/prepare-runtime.sh "$(CURDIR)/.venv" "$(CURDIR)/service-configs/uv-cfs.toml" meetingnotesd.py run_summarization.py
 
 # ---------------------------------------------------------------------------
 # Service management (requires sudo — will prompt for password)

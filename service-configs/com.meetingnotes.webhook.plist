@@ -7,12 +7,8 @@
 
     <key>ProgramArguments</key>
     <array>
-        <!-- Stable absolute paths to gh and uv; customize for your installation -->
-        <string>/opt/homebrew/bin/gh</string>
-        <string>cfs</string>
-        <string>--</string>
-        <string>/opt/homebrew/bin/uv</string>
-        <string>run</string>
+        <!-- Prepared by make runtime; no package resolution at startup -->
+        <string>/Users/CHANGEME/git/meeting-notes-processor/.venv/bin/python</string>
         <string>meetingnotesd.py</string>
     </array>
 
@@ -22,13 +18,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>UV_CONFIG_FILE</key>
-        <string>/Users/CHANGEME/git/meeting-notes-processor/service-configs/uv-cfs.toml</string>
         <!-- Required for git push operations -->
         <key>GH_TOKEN</key>
         <string>ghp_CHANGEME</string>
 
-        <!-- PATH must include gh, az, uv, and node (for GitHub Copilot CLI) -->
+        <!-- PATH must include node (for GitHub Copilot CLI) -->
         <!-- If using nvm, find node path with: dirname "$(which node)" -->
         <!-- Example nvm path: /Users/CHANGEME/.nvm/versions/node/v22.x.x/bin -->
         <key>PATH</key>

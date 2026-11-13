@@ -25,6 +25,12 @@ touch "$LOG_FILE"
 # Ensure recordings directory exists
 mkdir -p "$HOME/transcriber/recordings"
 
+if [ ! -x "$HOME/transcriber/.venv/bin/python" ]; then
+    echo "ERROR: prepare the runtime with bash ~/transcriber/prepare-runtime.sh first" >&2
+    exit 1
+fi
+plutil -replace ProgramArguments -json "[\"$HOME/transcriber/.venv/bin/python\", \"$HOME/transcriber/transcriber.py\"]" "$PLIST_SRC"
+
 # Unload old service if loaded
 if launchctl list 2>/dev/null | grep -q "$SERVICE_LABEL"; then
     echo "Unloading existing service..."

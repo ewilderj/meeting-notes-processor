@@ -42,47 +42,45 @@ This guide covers both the **client** (your laptop) and the **server**. The serv
 
 ## Prerequisites
 
-### CFS package access for launchd
+### Installation-only CFS package access
 
-All uv-based LaunchAgent templates (including the obsolete VBAN receiver) run
-`/opt/homebrew/bin/gh cfs -- /opt/homebrew/bin/uv run ...`. Install GitHub CLI,
-the `gh cfs` extension, Azure CLI >=2.54, and uv on **each service host** before
-loading an updated plist. Customize the absolute executable paths and ensure
-`az` is on the plist's `PATH` if not using Apple Silicon Homebrew.
-
-Sign in on each host as the macOS user that runs the LaunchAgent (for example,
-`edd` on pilot, not your laptop user):
+All LaunchAgent templates execute persistent `.venv/bin/python` interpreters
+directly. No uv sync, package download, or Azure authentication occurs at startup
+or when the menu bar launches the VBAN sender. Install GitHub CLI, the `gh cfs`
+extension, Azure CLI >=2.54, and uv on each host used to **prepare/update**
+environments, then sign in:
 
 ```bash
 az login --tenant 398a6654-997b-47e9-b12b-9515b896b4de --allow-no-subscriptions
 gh cfs doctor --auth
-# On pilot (after deploying server/); locally use the matching plist path:
-UV_CONFIG_FILE="$HOME/transcriber/uv-cfs.toml" gh cfs -- uv run --with pyyaml python -c "import yaml"
+# From transcriber/ on the laptop:
+make runtime                    # menu bar, meeting CLI, and VBAN dependencies
+make local-transcriber-runtime  # local FastAPI server
+# On pilot, after deploying server/:
+cd ~/transcriber
+bash prepare-runtime.sh
 ```
 
-The last command checks actual package access; `doctor --auth` alone does not.
-launchd does not inherit shell profiles. If authentication uses custom
-`AZURE_CONFIG_DIR` or `GH_CONFIG_DIR` locations, add those paths to the plist's
-environment. Never store CFS tokens in plists. Expired Azure sessions need
-interactive renewal outside launchd.
+Preparation reads the scripts' PEP 723 dependencies and installs them through
+`gh cfs -- uv pip install` with CFS as the sole default index. The menu bar and
+VBAN sender share `transcriber/.venv`; the server uses `server/.venv` locally
+or `~/transcriber/.venv` on pilot. Customize the plist's absolute interpreter
+path when relocating code. Dependencies persist across reboot and Azure session
+expiry. Never store CFS tokens in plists.
 
-`service-configs/uv-cfs.toml` configures CFS as the sole default Python index.
-A matching `server/uv-cfs.toml` travels with the independently deployed server
-directory; keep the two index definitions in sync. Each plist selects its config
-through an absolute `UV_CONFIG_FILE` path; customize that path when relocating
-the code. The obsolete VBAN receiver template also expects the deployed server
-config in `~/transcriber/`. Ordinary CLI and CI runs do not auto-discover these
-files and retain their existing index behavior.
-
-For manual CFS commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`.
-Dependencies remain in PEP 723 script metadata; there is no project `uv.lock` to
-regenerate. The menu bar's uv child processes inherit both the explicit config
-and CFS credentials from the wrapper while it is running.
+`service-configs/uv-cfs.toml` and the independently deployed `server/uv-cfs.toml`
+must retain matching index definitions. Ordinary CLI and CI runs do not
+auto-discover these files. `UV_OFFLINE=true make runtime` can prepare from cached
+CFS packages, but fails if any dependency is missing. The obsolete VBAN receiver
+needs its own script added to the preparation requirements if used separately.
+There is no project `uv.lock` to regenerate.
 
 Updating these source templates does not update installed LaunchAgents.
 Restart targets reload the installed plist, not the repository template; apply
 the reviewed plist changes separately when ready. Provisioning does not install
-CFS or establish Azure login automatically.
+CFS or establish Azure login automatically. Installation targets prepare their
+environments before loading a service; `make deploy` prepares the pilot server
+before restarting it and excludes `.venv/` from rsync deletion.
 
 | Item | Where | Purpose |
 | --- | --- | --- |
@@ -254,8 +252,9 @@ make local-transcriber-logs
 `make local-transcriber-restart` and `make meeting-bar-restart` reload the
 installed plists without copying repository templates over your settings.
 The `meeting-bar-local` and `meeting-bar-pilot` targets change only the target
-host in the installed plist. Installation targets still copy templates; use
-them only for initial setup or an intentional configuration replacement.
+host in the installed plist. Installation targets prepare dependencies, preserve
+an existing plist's custom settings, and update its interpreter/script paths
+for the current checkout. They copy a template only if none is installed.
 
 The local launchd agent is installed at:
 
@@ -402,7 +401,7 @@ make build
 
 ```bash
 cd transcriber
-uv run meeting_bar.py
+make meeting-bar-install
 ```
 
 This puts an icon in your menu bar:
@@ -432,7 +431,8 @@ cd transcriber
 make build
 ```
 
-**Tip**: To run on login, add `uv run meeting_bar.py` to your login items, or create a launchd plist.
+**Tip**: The installed LaunchAgent runs the prepared Python environment on login;
+it does not need a fresh Azure session.
 
 ### Option B: Manual CLI Commands
 

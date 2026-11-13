@@ -17,9 +17,27 @@ import importlib
 import threading
 import datetime
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "transcriber"))
 import meeting_bar
+import meeting
+
+
+def test_sender_uses_running_interpreter_without_package_resolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(meeting_bar, "_SENDER_PROCESS", None)
+    for module in (meeting_bar, meeting):
+        monkeypatch.setattr(module, "_sender_running", lambda: None)
+        monkeypatch.setattr(module, "PID_FILE", tmp_path / f"{module.__name__}.pid")
+        monkeypatch.setattr(module, "LOG_FILE", tmp_path / f"{module.__name__}.log")
+        monkeypatch.setattr(sys, "executable", "/prepared runtime/bin/python")
+        with mock.patch.object(module.subprocess, "Popen") as popen:
+            popen.return_value.pid = 1234
+            assert module.start_sender("BlackHole 2ch", "Mic") == 1234
+        args = popen.call_args.args[0]
+        assert args[:2] == [sys.executable, str(module.VBAN_SEND_SCRIPT)]
+        assert args[-2:] == ["--mic", "Mic"]
+        assert "uv" not in args and "cfs" not in args
 
 
 class _FakeCompletedProcess:

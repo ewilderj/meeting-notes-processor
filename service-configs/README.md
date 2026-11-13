@@ -4,30 +4,32 @@ This directory contains configuration files to run the webhook daemon as a prope
 
 ## macOS (launchd)
 
-Python packages are resolved through GitHub Central Feed Service (CFS), configured
-as the sole default index in `service-configs/uv-cfs.toml`, selected explicitly by
-the plist's absolute `UV_CONFIG_FILE` path. Ordinary CLI and CI runs do not
-auto-discover this file and retain their existing index behavior. The plist runs
-`/opt/homebrew/bin/gh cfs -- /opt/homebrew/bin/uv run ...`; customize both absolute
-paths if your tools are installed elsewhere. Its `PATH` must also include Azure
-CLI (`az`), since launchd does not load your shell profile.
+LaunchAgents execute a persistent virtual environment's Python directly.
+They do not run uv, resolve packages, or acquire Azure credentials at startup.
+Before installing or updating services, run `make runtime` from the repository
+root. It installs the webhook and summarizer dependencies from PEP 723 metadata
+through `gh cfs -- uv pip install` into `.venv`, using the CFS-only configuration
+in `service-configs/uv-cfs.toml`. Ordinary CLI and CI runs do not auto-discover
+this configuration and retain their existing index behavior.
 
 Before installing, install the `gh cfs` extension and Azure CLI >=2.54, sign in
-to Azure as the **same macOS user that runs the agent**, and verify feed access:
+to Azure as the user preparing the runtime:
 
 ```bash
 az login --tenant 398a6654-997b-47e9-b12b-9515b896b4de --allow-no-subscriptions
 gh cfs doctor --auth
-# From the repository root:
-UV_CONFIG_FILE="$PWD/service-configs/uv-cfs.toml" gh cfs -- uv run --with pyyaml python -c "import yaml"
+# From the repository root; this verifies actual feed access:
+make runtime
 ```
 
-`doctor --auth` checks token acquisition, not feed authorization. CFS credentials
-are temporary; do not put them in the plist. If you use custom `AZURE_CONFIG_DIR`
-or `GH_CONFIG_DIR` locations, set those paths in the plist too. Azure sessions
-can expire and require interactive renewal outside launchd. For manual CFS
-commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`. There is no project
-`uv.lock`: scripts declare their own PEP 723 dependencies.
+`doctor --auth` checks token acquisition, not feed authorization. Azure sessions
+can expire, but this affects installation/update only, not a prepared service's
+next reboot. Never put CFS tokens in plists. `UV_OFFLINE=true make runtime` can
+prepare an environment from cached CFS packages without authentication; missing
+packages cause an explicit failure, never a fallback to a public index.
+There is no project `uv.lock`: scripts declare their own PEP 723 dependencies.
+The standard standalone summarizer command is launched with the daemon's own
+Python interpreter; custom hook/processing commands remain your responsibility.
 
 1. **Edit the plist file** to set correct paths:
    ```bash
@@ -40,7 +42,7 @@ commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`. There is no 
 
 2. **Required customizations:**
    - `WorkingDirectory`: Path to your processor repo
-   - `UV_CONFIG_FILE`: Absolute path to `service-configs/uv-cfs.toml`
+   - `ProgramArguments[0]`: Absolute path to the prepared `.venv/bin/python`
    - `GH_TOKEN`: Your GitHub token (for git push)
    - `WEBHOOK_CONFIG`: Path to your config.yaml (optional, defaults to ./config.yaml)
 
@@ -72,6 +74,9 @@ commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`. There is no 
 
 ## Linux (systemd)
 
+Run `make runtime` before installing/updating the unit. Like the LaunchAgent, it
+executes `.venv/bin/python` directly; Azure authentication is installation-only.
+
 1. **Edit the service file** to set correct paths:
    ```bash
    # Copy and customize
@@ -85,7 +90,7 @@ commands, set `UV_CONFIG_FILE` as above and use `gh cfs -- uv ...`. There is no 
    - `User`: Your username
    - `WorkingDirectory`: Path to your processor repo
    - `Environment="GH_TOKEN=..."`: Your GitHub token
-   - `ExecStart`: Ensure `uv` path is correct (use `which uv` to find it)
+   - `ExecStart`: Absolute path to the prepared `.venv/bin/python`
 
 3. **Enable and start the service:**
    ```bash

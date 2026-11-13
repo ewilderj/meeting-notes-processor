@@ -22,6 +22,7 @@ Run with: uv run test_phase5.py
 """
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -260,6 +261,27 @@ class TestHookExecution:
 
 class TestStandaloneProcessing:
     """Tests for local standalone processing mode."""
+
+    @pytest.mark.parametrize("uv_path", ["uv", "/opt/homebrew/bin/uv"])
+    def test_legacy_summarizer_command_uses_prepared_interpreter(self, minimal_config, monkeypatch, uv_path):
+        monkeypatch.setattr(sys, "executable", "/prepared runtime/bin/python")
+        minimal_config["processing"] = {
+            "standalone": {"command": f"{uv_path} run run_summarization.py --git --debug"}
+        }
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        assert shlex.split(agent.standalone_command) == [
+            sys.executable,
+            str(Path(meetingnotesd.__file__).with_name("run_summarization.py")),
+            "--git",
+            "--debug",
+        ]
+
+    def test_custom_processing_command_is_preserved(self, minimal_config):
+        minimal_config["processing"] = {
+            "standalone": {"command": "/custom/processor --flag"}
+        }
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        assert agent.standalone_command == "/custom/processor --flag"
 
     @pytest.mark.parametrize("exit_code,expected_success", [(0, True), (2, True), (1, False)])
     def test_processor_exit_codes(self, minimal_config, temp_workspace, exit_code, expected_success):

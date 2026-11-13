@@ -4,6 +4,7 @@
 # dependencies = [
 #     "requests>=2.31.0",
 #     "sounddevice>=0.5.0",
+#     "numpy>=1.26.0",
 # ]
 # ///
 """
@@ -191,7 +192,7 @@ def start_sender(device: str, mic: str | None = None) -> int:
         return existing
 
     cmd = [
-        "uv", "run", str(VBAN_SEND_SCRIPT),
+        sys.executable, str(VBAN_SEND_SCRIPT),
         "-d", device,
         "-t", VBAN_TARGET_HOST,
         "-p", str(VBAN_PORT),

@@ -26,7 +26,10 @@ laptop                          pilot (Mac Mini)                nuctu
 1. **NEVER edit files directly on pilot.** Pilot is deployed from this repo.
    Edit `transcriber/server/transcriber.py` here, commit, then `make deploy`.
 2. **Always use `uv run`**, never `python3` or `pip`. All scripts use PEP 723
-   inline script metadata for dependencies.
+   inline script metadata for dependencies. Exception: installed services and
+   their child processes run persistent `.venv/bin/python` directly. Prepare
+   environments with `make runtime` / `make local-transcriber-runtime` before
+   installation or update; never resolve packages at service startup.
 3. **The `server/` directory is the deployment unit.** Only files in `server/`
    get rsynced to pilot. Everything else (meeting_bar.py, vban/, setup/) runs
    on the laptop or is used for provisioning.
@@ -69,7 +72,8 @@ make logs     # tail -f the service log
 ```
 
 `make deploy` does:
-- `rsync -avz --delete --exclude='recordings/' server/ edd@pilot:~/transcriber/`
+- `rsync` of `server/`, excluding `recordings/` and `.venv/`
+- Installation-only CFS preparation with `bash prepare-runtime.sh`
 - `launchctl bootout` + `launchctl bootstrap` to restart `com.transcriber`
 
 ## Changing the menu bar app
