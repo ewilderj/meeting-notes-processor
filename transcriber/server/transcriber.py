@@ -166,6 +166,7 @@ MAX_RECENT = 20
 # Created lazily in startup() to bind to the correct event loop
 _transcription_queue: Optional[asyncio.Queue] = None
 _queue_worker_task: Optional[asyncio.Task] = None
+_transcribing_recording: Optional[Recording] = None
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +743,7 @@ async def _transcribe(recording: Recording) -> None:
 
     except Exception as e:
         recording.state = RecordingState.FAILED
-        recording.error = str(e)
+        recording.error = str(e) or type(e).__name__
         logger.error(f"Transcription error for {recording.title}: {e}", exc_info=True)
 
 
@@ -752,8 +753,10 @@ async def _transcription_worker() -> None:
     Pulls recordings from the queue one at a time so that only a single
     whisper-cli process runs at once, avoiding CPU/memory contention.
     """
+    global _transcribing_recording
     while True:
         recording = await _transcription_queue.get()
+        _transcribing_recording = recording
         queue_depth = _transcription_queue.qsize()
         if queue_depth > 0:
             logger.info(f"Transcription queue: starting '{recording.title}' "
@@ -765,6 +768,7 @@ async def _transcription_worker() -> None:
             logger.error(f"Transcription worker error: {e}", exc_info=True)
         finally:
             _archive_recording(recording)
+            _transcribing_recording = None
             _transcription_queue.task_done()
 
 
@@ -776,10 +780,13 @@ async def _transcription_worker() -> None:
 @app.get("/status")
 async def status():
     """Health check with system info."""
+    errors = _dependency_errors()
     return {
-        "status": "ok",
+        "status": "degraded" if errors else "ok",
+        "dependency_errors": errors,
         "service": "transcriber",
         "recording": active_recording.to_dict() if active_recording else None,
+        "transcription": _transcribing_recording.to_dict() if _transcribing_recording else None,
         "transcription_queue_depth": _transcription_queue.qsize(),
         "recording_max_age_days": RECORDING_MAX_AGE_DAYS,
         "disk_free_gb": round(_disk_free_gb(), 1),
@@ -969,6 +976,19 @@ async def recordings():
 # Startup
 # ---------------------------------------------------------------------------
 
+def _dependency_errors() -> list[str]:
+    errors = []
+    if not Path(WHISPER_CLI).is_file() or not os.access(WHISPER_CLI, os.X_OK):
+        errors.append(f"whisper-cli missing or not executable: {WHISPER_CLI}")
+    model = Path(WHISPER_MODEL)
+    try:
+        model_valid = model.is_file() and os.access(model, os.R_OK) and model.stat().st_size > 0
+    except OSError:
+        model_valid = False
+    if not model_valid:
+        errors.append(f"Whisper model missing, empty, or not readable: {WHISPER_MODEL}")
+    return errors
+
 
 @app.on_event("startup")
 async def startup():
@@ -980,10 +1000,8 @@ async def startup():
     # Create the queue in the running event loop
     _transcription_queue = asyncio.Queue()
 
-    if not Path(WHISPER_CLI).exists():
-        logger.warning(f"whisper-cli not found at {WHISPER_CLI}")
-    if not Path(WHISPER_MODEL).exists():
-        logger.warning(f"Whisper model not found at {WHISPER_MODEL}")
+    for error in _dependency_errors():
+        logger.error(error)
 
     # Start the sequential transcription worker
     _queue_worker_task = asyncio.create_task(_transcription_worker())

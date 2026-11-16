@@ -33,7 +33,7 @@ sync:
   on_startup: true
   before_accepting_webhooks: true
   poll_interval_seconds: 1800
-  ff_only: true
+  ff_only: true  # Set false for previewed, conflict-free merges between multiple writers.
 
 # RELAY MODE: trigger a workflow_dispatch in the data repo for cloud processing.
 # Disable this if using standalone mode.

@@ -149,7 +149,10 @@ Room recordings are started from the menu bar's **Start Room Recording** item,
 capture only the physical laptop microphone, and carry `capture_mode: room`
 through transcript metadata so speaker oversplitting can be reconciled during
 summarization.
-- **`GET /status`** — Health check with disk space, current recording state, etc.
+- **`GET /status`** — Health check with disk space and current recording state.
+  Returns `status: degraded` with `dependency_errors` if the Whisper executable
+  or model is missing/unusable (including deletion after startup). Audio capture
+  remains available so recordings can be recovered after repairing Whisper.
 
 The transcriber captures VBAN audio directly — no BlackHole, no ffmpeg, no intermediate services on the server side.
 

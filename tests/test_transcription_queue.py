@@ -44,6 +44,7 @@ import transcriber
 def reset_state():
     """Reset global state between tests."""
     transcriber.active_recording = None
+    transcriber._transcribing_recording = None
     transcriber.recent_recordings.clear()
     # Create a fresh queue bound to the current event loop
     transcriber._transcription_queue = asyncio.Queue()
@@ -321,6 +322,7 @@ async def test_queue_depth_reported():
         # Give the worker a moment to pick up the first item
         await asyncio.sleep(0.02)
         assert transcriber._transcription_queue.qsize() == 2
+        assert (await transcriber.status())["transcription"]["title"] == "M0"
 
         # Release the gate and let everything finish
         gate.set()
@@ -328,6 +330,7 @@ async def test_queue_depth_reported():
         worker.cancel()
 
     assert transcriber._transcription_queue.qsize() == 0
+    assert (await transcriber.status())["transcription"] is None
 
 
 @pytest.mark.asyncio
@@ -343,6 +346,39 @@ async def test_status_endpoint_includes_queue_depth(tmp_path):
             data = resp.json()
             assert "transcription_queue_depth" in data
             assert data["transcription_queue_depth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_status_reports_deleted_whisper_installation(tmp_path, monkeypatch):
+    binary = tmp_path / "whisper-cli"
+    model = tmp_path / "model.bin"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    model.write_bytes(b"model")
+    monkeypatch.setattr(transcriber, "WHISPER_CLI", str(binary))
+    monkeypatch.setattr(transcriber, "WHISPER_MODEL", str(model))
+    assert (await transcriber.status())["status"] == "ok"
+
+    binary.unlink()
+    model.unlink()
+
+    result = await transcriber.status()
+    assert result["status"] == "degraded"
+    assert len(result["dependency_errors"]) == 2
+    assert "whisper-cli missing" in result["dependency_errors"][0]
+    assert "model missing" in result["dependency_errors"][1]
+
+
+@pytest.mark.asyncio
+async def test_status_reports_empty_model_and_nonexecutable_binary(tmp_path, monkeypatch):
+    binary = tmp_path / "whisper-cli"
+    binary.touch()
+    binary.chmod(0o644)
+    model = tmp_path / "model.bin"
+    model.touch()
+    monkeypatch.setattr(transcriber, "WHISPER_CLI", str(binary))
+    monkeypatch.setattr(transcriber, "WHISPER_MODEL", str(model))
+    assert len((await transcriber.status())["dependency_errors"]) == 2
 
 
 # ============================================================================

@@ -26,6 +26,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -200,6 +201,182 @@ class TestSyncRepo:
         # The new file should now exist
         assert (data_repo / "newfile.txt").exists()
 
+    @pytest.fixture
+    def diverged_repos(self, minimal_config, temp_workspace, monkeypatch):
+        monkeypatch.delenv("MEETINGNOTES_SYNC_FF_ONLY", raising=False)
+        local = temp_workspace["data_repo"]
+        bare = temp_workspace["workspace"] / "remote.git"
+        writer = temp_workspace["workspace"] / "writer"
+
+        def git(repo, *args):
+            git_dir = ["--git-dir", str(repo)] if repo.suffix == ".git" else []
+            return subprocess.check_output(
+                ["git", *git_dir, "-c", "core.hooksPath=/dev/null", *args],
+                cwd=repo, stderr=subprocess.PIPE, text=True,
+            ).strip()
+
+        git(local, "clone", "--bare", str(local), str(bare))
+        git(local, "remote", "add", "origin", str(bare))
+        git(local, "clone", str(bare), str(writer))
+        git(writer, "config", "user.email", "test@test.com")
+        git(writer, "config", "user.name", "Test")
+        (local / "note.org").write_text("Local notes\n")
+        git(local, "add", "note.org")
+        git(local, "commit", "-m", "Local notes")
+        (writer / "calendar.org").write_text("Remote calendar\n")
+        git(writer, "add", "calendar.org")
+        git(writer, "commit", "-m", "Remote calendar")
+        git(writer, "push", "origin", "main")
+        minimal_config["sync"]["ff_only"] = False
+        minimal_config["git"]["auto_push"] = True
+        return meetingnotesd.RepoAgent(minimal_config), local, writer, bare, git
+
+    def test_merge_sync_preserves_both_writers(self, diverged_repos):
+        agent, local, writer, _, git = diverged_repos
+        local_head = git(local, "rev-parse", "HEAD")
+        remote_head = git(writer, "rev-parse", "HEAD")
+        git(local, "config", "pull.rebase", "true")
+        git(local, "config", "merge.ff", "only")
+
+        success, message = agent.git_push()
+
+        assert success, message
+        assert git(local, "rev-list", "--parents", "-1", "HEAD").split()[1:] == [
+            local_head, remote_head,
+        ]
+        assert (local / "note.org").read_text() == "Local notes\n"
+        assert (local / "calendar.org").read_text() == "Remote calendar\n"
+        assert git(local, "status", "--porcelain") == ""
+        assert git(local, "rev-parse", "HEAD") == git(local, "rev-parse", "origin/main")
+
+    def test_conflict_preview_leaves_repository_untouched(self, diverged_repos):
+        agent, local, writer, _, git = diverged_repos
+        (writer / "note.org").write_text("Conflicting remote notes\n")
+        git(writer, "add", "note.org")
+        git(writer, "commit", "-m", "Conflicting notes")
+        git(writer, "push", "origin", "main")
+        before = git(local, "rev-parse", "HEAD")
+
+        success, message = agent.git_push()
+
+        assert not success
+        assert "merge-tree failed" in message
+        assert git(local, "rev-parse", "HEAD") == before
+        assert git(local, "status", "--porcelain") == ""
+        assert not (local / ".git" / "MERGE_HEAD").exists()
+        assert (local / "note.org").read_text() == "Local notes\n"
+
+    def test_merge_sync_refuses_uncommitted_work(self, diverged_repos):
+        agent, local, _, _, git = diverged_repos
+        (local / "pending.txt").write_text("Do not discard\n")
+        before = git(local, "rev-parse", "HEAD")
+
+        success, message = agent.git_push()
+
+        assert not success
+        assert "uncommitted changes" in message
+        assert git(local, "rev-parse", "HEAD") == before
+        assert (local / "pending.txt").read_text() == "Do not discard\n"
+
+    def test_ff_only_still_rejects_divergence_and_skips_push(self, diverged_repos):
+        agent, local, _, _, git = diverged_repos
+        agent.sync_ff_only = True
+        before = git(local, "rev-parse", "HEAD")
+        with mock.patch.object(agent, "_run_git", wraps=agent._run_git) as run:
+            success, message = agent.git_push()
+
+        assert not success
+        assert "Push skipped" in message
+        assert not any(call.args[0][0] == "push" for call in run.call_args_list)
+        assert git(local, "rev-parse", "HEAD") == before
+
+    def test_push_retries_remote_writer_race(self, diverged_repos, monkeypatch):
+        agent, local, writer, bare, git = diverged_repos
+        run_git = agent._run_git
+        pushes = []
+
+        def racing_git(args, **kwargs):
+            if args[0] == "push":
+                pushes.append(args)
+                if len(pushes) == 1:
+                    (writer / "calendar.org").write_text("New remote calendar\n")
+                    git(writer, "add", "calendar.org")
+                    git(writer, "commit", "-m", "Concurrent calendar update")
+                    git(writer, "push", "origin", "main")
+            return run_git(args, **kwargs)
+
+        monkeypatch.setattr(agent, "_run_git", racing_git)
+        monkeypatch.setattr(meetingnotesd.time, "sleep", lambda _: None)
+        success, message = agent.git_push()
+
+        assert success, message
+        assert len(pushes) == 2
+        assert (local / "calendar.org").read_text() == "New remote calendar\n"
+        assert git(bare, "rev-parse", "main") == git(local, "rev-parse", "HEAD")
+
+    def test_push_retry_budget_is_bounded(self, diverged_repos, monkeypatch):
+        agent, local, writer, _, git = diverged_repos
+        run_git = agent._run_git
+        pushes = []
+
+        def racing_git(args, **kwargs):
+            if args[0] == "push":
+                pushes.append(args)
+                (writer / "calendar.org").write_text(f"Calendar version {len(pushes)}\n")
+                git(writer, "add", "calendar.org")
+                git(writer, "commit", "-m", "Concurrent calendar update")
+                git(writer, "push", "origin", "main")
+            return run_git(args, **kwargs)
+
+        monkeypatch.setattr(agent, "_run_git", racing_git)
+        monkeypatch.setattr(meetingnotesd.time, "sleep", lambda _: None)
+        success, message = agent.git_push()
+
+        assert not success
+        assert "rejected" in message
+        assert len(pushes) == 3
+        assert git(local, "status", "--porcelain") == ""
+
+    def test_merge_sync_refuses_wrong_branch(self, diverged_repos):
+        agent, local, _, _, git = diverged_repos
+        git(local, "checkout", "-b", "other-work")
+        before = git(local, "rev-parse", "HEAD")
+
+        success, message = agent.git_push()
+
+        assert not success
+        assert "Expected branch main, found other-work" in message
+        assert git(local, "rev-parse", "HEAD") == before
+
+    def test_sync_timeout_is_reported(self, repo_agent):
+        with mock.patch.object(
+            repo_agent, "_run_git",
+            side_effect=subprocess.TimeoutExpired(["git", "pull"], 60),
+        ):
+            changed, message = repo_agent.sync_repo()
+        assert not changed
+        assert "timed out" in message
+        assert repo_agent.last_sync_error == message
+
+    def test_auth_failure_is_not_retried(self, repo_agent):
+        repo_agent.sync_enabled = False
+        repo_agent.git_auto_push = True
+        with mock.patch.object(repo_agent, "_run_git") as run:
+            run.return_value = subprocess.CompletedProcess(
+                ["git", "push"], 128, "", "Permission denied (publickey)"
+            )
+            success, message = repo_agent.git_push()
+        assert not success
+        assert "Permission denied" in message
+        run.assert_called_once()
+
+    def test_sync_policy_can_be_overridden_for_launchd(self, minimal_config, monkeypatch):
+        monkeypatch.setenv("MEETINGNOTES_SYNC_FF_ONLY", "false")
+        assert not meetingnotesd.RepoAgent(minimal_config).sync_ff_only
+        monkeypatch.setenv("MEETINGNOTES_SYNC_FF_ONLY", "invalid")
+        with pytest.raises(ValueError, match="must be true or false"):
+            meetingnotesd.RepoAgent(minimal_config)
+
 
 class TestHookExecution:
     """FR-5.4: Optional hook command execution on new commits."""
@@ -340,8 +517,11 @@ class TestStandaloneProcessing:
         assert success is False
         assert "disabled" in message.lower()
 
-    def test_async_standalone_processing_coalesces_concurrent_runs(self, minimal_config, temp_workspace):
-        """A second async trigger skips while processing is already active."""
+    @pytest.mark.parametrize("first_pass_fails", [False, True])
+    def test_async_standalone_processing_coalesces_concurrent_runs(
+        self, minimal_config, temp_workspace, first_pass_fails
+    ):
+        """Arrivals during a batch coalesce into one additional pass."""
         import meetingnotesd
 
         minimal_config["sync"]["enabled"] = False
@@ -354,19 +534,34 @@ class TestStandaloneProcessing:
         }
         agent = meetingnotesd.RepoAgent(minimal_config)
         calls = []
+        started = threading.Event()
+        release = threading.Event()
 
         def fake_processing():
             calls.append("run")
-            time.sleep(0.2)
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(timeout=2)
+                if first_pass_fails:
+                    raise RuntimeError("First batch failed")
             return True, "ok"
 
         agent.run_standalone_processing = fake_processing
 
         agent.run_standalone_processing_async()
-        agent.run_standalone_processing_async()
-        agent._processing_thread.join(timeout=2)
+        assert started.wait(timeout=2)
+        thread = agent._processing_thread
+        try:
+            for _ in range(3):
+                agent.run_standalone_processing_async()
+        finally:
+            release.set()
+        thread.join(timeout=2)
 
-        assert calls == ["run"]
+        assert not thread.is_alive()
+        assert calls == ["run", "run"]
+        assert agent._processing_thread is None
+        assert agent.last_processing_error is None
 
 
 class TestWorkflowDispatch:
@@ -524,6 +719,12 @@ class TestWebhookEndpoint:
         assert "sync" in data
         assert data["sync"]["enabled"] is True
 
+    def test_health_check_reports_sync_failure(self, test_client, monkeypatch):
+        monkeypatch.setattr(meetingnotesd.agent, "last_push_error", "SSH authentication failed")
+        data = test_client.get("/").get_json()
+        assert data["status"] == "degraded"
+        assert data["sync"]["last_error"] == "SSH authentication failed"
+
     def test_webhook_syncs_before_processing(self, test_client, temp_workspace, monkeypatch):
         """Webhook syncs repo before writing file (when enabled)."""
         import meetingnotesd
@@ -570,6 +771,23 @@ class TestWebhookEndpoint:
             "message": "Calendar already current",
         }
 
+    def test_calendar_does_not_overwrite_after_merge_sync_failure(
+        self, test_client, temp_workspace, monkeypatch
+    ):
+        calendar = temp_workspace["data_repo"] / "calendar.org"
+        calendar.write_text("Preserve current calendar\n")
+
+        def failed_sync():
+            meetingnotesd.agent.last_sync_error = "git merge-tree failed: conflict"
+            return False, meetingnotesd.agent.last_sync_error
+
+        monkeypatch.setattr(meetingnotesd.agent, "sync_repo", failed_sync)
+        response = test_client.post(
+            "/calendar", data="Replacement\n", content_type="text/plain"
+        )
+        assert response.status_code == 503
+        assert calendar.read_text() == "Preserve current calendar\n"
+
     def test_calendar_commit_failure_restores_previous_content(
         self, test_client, temp_workspace, monkeypatch
     ):
@@ -615,6 +833,24 @@ class TestWebhookEndpoint:
 
 class TestBackgroundSync:
     """Tests for background sync thread."""
+
+    def test_background_sync_retries_unpublished_commits(self, minimal_config, monkeypatch):
+        minimal_config["sync"]["poll_interval_seconds"] = 60
+        minimal_config["git"]["auto_push"] = True
+        agent = meetingnotesd.RepoAgent(minimal_config)
+        monkeypatch.setattr(agent, "sync_repo", lambda: (False, "already up to date"))
+
+        def push():
+            agent.stop_background_sync()
+            return True, "Pushed pending commits"
+
+        pushed = mock.Mock(side_effect=push)
+        monkeypatch.setattr(agent, "git_push", pushed)
+        agent.start_background_sync()
+        agent._sync_thread.join(timeout=2)
+
+        assert not agent._sync_thread.is_alive()
+        pushed.assert_called_once()
 
     def test_background_sync_starts_when_configured(self, minimal_config, temp_workspace):
         """Background sync thread starts when poll_interval > 0."""

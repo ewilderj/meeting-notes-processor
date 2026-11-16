@@ -46,6 +46,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+import random
 import shlex
 import sys
 import argparse
@@ -118,6 +119,13 @@ class RepoAgent:
         self.sync_before_accepting_webhooks = bool(_get_nested(config, ['sync', 'before_accepting_webhooks'], True))
         self.sync_poll_interval_seconds = float(_get_nested(config, ['sync', 'poll_interval_seconds'], 0) or 0)
         self.sync_ff_only = bool(_get_nested(config, ['sync', 'ff_only'], True))
+        sync_ff_only_override = os.getenv('MEETINGNOTES_SYNC_FF_ONLY')
+        if sync_ff_only_override is not None:
+            if sync_ff_only_override.lower() not in ('true', 'false'):
+                raise ValueError('MEETINGNOTES_SYNC_FF_ONLY must be true or false')
+            self.sync_ff_only = sync_ff_only_override.lower() == 'true'
+        self.last_sync_error: str | None = None
+        self.last_push_error: str | None = None
 
         # Git remote/branch settings (used for clone, pull, push)
         self.git_remote = _get_nested(config, ['git', 'remote'], 'origin')
@@ -157,6 +165,9 @@ class RepoAgent:
         self._stop_event = threading.Event()
         self._sync_thread: threading.Thread | None = None
         self._processing_thread: threading.Thread | None = None
+        self._processing_lock = threading.Lock()
+        self._processing_pending = False
+        self.last_processing_error: str | None = None
 
     def _token(self) -> str | None:
         return os.environ.get('GH_TOKEN')
@@ -174,7 +185,15 @@ class RepoAgent:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
         )
+
+    def _checked_git(self, args: list[str], *, timeout: int = 30) -> str:
+        result = self._run_git(args, timeout=timeout)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"git {args[0]} failed: {detail}")
+        return result.stdout.strip()
 
     def ensure_repo_checkout(self) -> None:
         """Clone the data repo if it doesn't exist yet."""
@@ -202,32 +221,52 @@ class RepoAgent:
         if result.returncode != 0:
             raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
 
-    def _get_head_sha(self) -> str | None:
-        result = self._run_git(['rev-parse', 'HEAD'], timeout=10)
-        if result.returncode != 0:
-            return None
-        return result.stdout.strip() or None
-
     def sync_repo(self) -> tuple[bool, str]:
         """Sync local data repo. Returns (changed, message)."""
         if not self.sync_enabled:
             return False, "sync disabled"
 
-        self.ensure_repo_checkout()
-        before = self._get_head_sha()
+        try:
+            self.ensure_repo_checkout()
+            before = self._checked_git(['rev-parse', 'HEAD'])
+            if self.sync_ff_only:
+                self._checked_git([
+                    'pull', '--ff-only', '--no-rebase',
+                    str(self.git_remote), str(self.git_branch),
+                ], timeout=60)
+            else:
+                self._merge_remote()
+            after = self._checked_git(['rev-parse', 'HEAD'])
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            self.last_sync_error = str(error)
+            logger.error(f"Repository sync failed: {error}")
+            return False, self.last_sync_error
 
-        pull_args = ['pull']
-        if self.sync_ff_only:
-            pull_args.append('--ff-only')
-        pull_args.extend([str(self.git_remote), str(self.git_branch)])
-
-        result = self._run_git(pull_args, timeout=60)
-        if result.returncode != 0:
-            return False, f"git pull failed: {result.stderr.strip()}"
-
-        after = self._get_head_sha()
-        changed = bool(before and after and before != after)
+        self.last_sync_error = None
+        changed = before != after
         return changed, ("pulled new commits" if changed else "already up to date")
+
+    def _merge_remote(self) -> None:
+        """Preview opt-in merges without touching dirty or conflicting work."""
+        branch = self._checked_git(['symbolic-ref', '--short', 'HEAD'])
+        if branch != str(self.git_branch):
+            raise RuntimeError(f"Expected branch {self.git_branch}, found {branch}")
+        if self._checked_git(['status', '--porcelain']):
+            raise RuntimeError("Cannot sync: data repository has uncommitted changes")
+        merge_head = self._run_git(['rev-parse', '--verify', '-q', 'MERGE_HEAD'])
+        if merge_head.returncode == 0:
+            raise RuntimeError("Cannot sync: data repository has an unfinished merge")
+        self._checked_git(['fetch', '--no-tags', str(self.git_remote), str(self.git_branch)], timeout=60)
+        remote_sha = self._checked_git(['rev-parse', 'FETCH_HEAD'])
+        self._checked_git(['merge-tree', '--write-tree', 'HEAD', remote_sha], timeout=60)
+        try:
+            self._checked_git([
+                'merge', '--no-edit', '--ff', '--no-autostash', remote_sha,
+            ], timeout=60)
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            if self._run_git(['rev-parse', '--verify', '-q', 'MERGE_HEAD']).returncode == 0:
+                self._checked_git(['merge', '--abort'])
+            raise
 
     def _run_hook_on_new_commits(self) -> tuple[bool, str]:
         if not self.hook_on_new_commits_enabled:
@@ -338,34 +377,43 @@ class RepoAgent:
 
     def run_standalone_processing_async(self) -> None:
         """Run standalone processing in background thread, then push results.
-        
-        If a processing thread is already running, skip — it will pick up
-        any new inbox files since run_summarization processes all files.
+
+        Coalesce triggers, but run another pass for arrivals during processing.
         """
-        if self._processing_thread and self._processing_thread.is_alive():
-            logger.info("Processing already in progress, skipping (new files will be picked up)")
-            return
-
         def _background_task():
-            try:
-                with self._lock:
-                    proc_ok, proc_msg = self.run_standalone_processing()
-                    if proc_ok:
-                        logger.info(f"Background processing succeeded: {proc_msg}")
-                        if self.git_auto_push:
-                            push_ok, push_msg = self.git_push()
-                            if push_ok:
-                                logger.info(f"Background push succeeded: {push_msg}")
-                            else:
-                                logger.error(f"Background push failed: {push_msg}")
-                    else:
-                        logger.error(f"Background processing failed: {proc_msg}")
-            except Exception as e:
-                logger.error(f"Background processing exception: {e}")
+            while True:
+                with self._processing_lock:
+                    self._processing_pending = False
+                try:
+                    with self._lock:
+                        proc_ok, proc_msg = self.run_standalone_processing()
+                        if proc_ok:
+                            self.last_processing_error = None
+                            logger.info(f"Background processing succeeded: {proc_msg}")
+                            if self.git_auto_push:
+                                push_ok, push_msg = self.git_push()
+                                if push_ok:
+                                    logger.info(f"Background push succeeded: {push_msg}")
+                                else:
+                                    logger.error(f"Background push failed: {push_msg}")
+                        else:
+                            self.last_processing_error = proc_msg
+                            logger.error(f"Background processing failed: {proc_msg}")
+                except Exception as e:
+                    self.last_processing_error = str(e) or type(e).__name__
+                    logger.error(f"Background processing exception: {e}")
+                with self._processing_lock:
+                    if not self._processing_pending:
+                        self._processing_thread = None
+                        return
 
-        # Start background thread
-        self._processing_thread = threading.Thread(target=_background_task, daemon=True)
-        self._processing_thread.start()
+        with self._processing_lock:
+            self._processing_pending = True
+            if self._processing_thread is not None:
+                logger.info("Processing already in progress, queued another pass")
+                return
+            self._processing_thread = threading.Thread(target=_background_task, daemon=True)
+            self._processing_thread.start()
         logger.info("Started background processing thread")
 
     def maybe_dispatch_workflow(self, *, reason: str) -> tuple[bool, str]:
@@ -429,21 +477,39 @@ class RepoAgent:
         if not self.git_auto_push:
             return True, "Push disabled in config"
 
-        # Pull before push to avoid conflicts. Prefer ff-only semantics.
-        changed, message = self.sync_repo()
-        logger.info(f"Sync before push: {message}")
-        if changed and self.hook_on_new_commits_enabled:
-            ok, hook_msg = self._run_hook_on_new_commits()
-            if not ok:
-                logger.warning(hook_msg)
+        for attempt in range(3):
+            try:
+                changed, message = self.sync_repo()
+                logger.info(f"Sync before push: {message}")
+                if self.sync_enabled and self.last_sync_error:
+                    self.last_push_error = f"Push skipped: {message}"
+                    return False, self.last_push_error
+                if changed and self.hook_on_new_commits_enabled:
+                    ok, hook_msg = self._run_hook_on_new_commits()
+                    if not ok:
+                        logger.warning(hook_msg)
+                result = self._run_git([
+                    'push', '--porcelain', str(self.git_remote), str(self.git_branch),
+                ], timeout=60)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.last_push_error = f"Git push failed: {error}"
+                logger.error(self.last_push_error)
+                return False, self.last_push_error
+            if result.returncode == 0:
+                self.last_push_error = None
+                logger.info(f"Git pushed to {self.git_remote}/{self.git_branch}")
+                return True, f"Pushed to {self.git_remote}/{self.git_branch}"
 
-        # Push (use configured remote/branch)
-        result = self._run_git(['push', str(self.git_remote), str(self.git_branch)], timeout=60)
-        if result.returncode != 0:
-            return False, f"Git push failed: {result.stderr.strip()}"
-
-        logger.info(f"Git pushed to {self.git_remote}/{self.git_branch}")
-        return True, f"Pushed to {self.git_remote}/{self.git_branch}"
+            detail = (result.stdout + result.stderr).strip()
+            self.last_push_error = f"Git push failed: {detail}"
+            raced = '[rejected]' in detail and any(
+                reason in detail for reason in ('fetch first', 'non-fast-forward')
+            )
+            if not raced or not self.sync_enabled or attempt == 2:
+                logger.error(self.last_push_error)
+                return False, self.last_push_error
+            logger.warning("Remote advanced during push; syncing before retry")
+            time.sleep(random.uniform(0.5, 1.5) * (2 ** attempt))
 
     def start_background_sync(self) -> None:
         if not self.sync_enabled or self.sync_poll_interval_seconds <= 0:
@@ -465,6 +531,10 @@ class RepoAgent:
                                 logger.warning(hook_msg)
                         else:
                             logger.debug(f"Background sync: {message}")
+                        if self.git_auto_push and not self.last_sync_error:
+                            pushed, push_message = self.git_push()
+                            if not pushed:
+                                logger.error(f"Background push failed: {push_message}")
                 except Exception as e:
                     logger.warning(f"Background sync error: {e}")
                 self._stop_event.wait(self.sync_poll_interval_seconds)
@@ -585,8 +655,9 @@ def generate_filename(title):
 def health_check():
     """Health check endpoint."""
     processing_mode = 'standalone' if agent.standalone_enabled else 'relay'
+    sync_error = agent.last_sync_error or agent.last_push_error
     return jsonify({
-        'status': 'ok',
+        'status': 'degraded' if sync_error or agent.last_processing_error else 'ok',
         'service': 'meetingnotesd',
         'inbox_dir': agent.inbox_dir,
         'repository': agent.repo_dir,
@@ -600,10 +671,13 @@ def health_check():
         'sync': {
             'enabled': agent.sync_enabled,
             'poll_interval_seconds': agent.sync_poll_interval_seconds,
+            'ff_only': agent.sync_ff_only,
+            'last_error': sync_error,
         },
         'standalone': {
             'enabled': agent.standalone_enabled,
             'command': agent.standalone_command if agent.standalone_enabled else None,
+            'last_error': agent.last_processing_error,
         },
         'relay': {
             'workflow_dispatch_enabled': agent.workflow_dispatch_enabled,
@@ -671,7 +745,7 @@ def calendar():
                         'status': 'error',
                         'message': f'Calendar repository sync failed: {e}',
                     }), 503
-                if msg.startswith('git pull failed:'):
+                if agent.last_sync_error:
                     return jsonify({
                         'status': 'error',
                         'message': msg,

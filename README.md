@@ -368,7 +368,7 @@ sync:
   on_startup: true
   before_accepting_webhooks: true
   poll_interval_seconds: 1800    # Background polling (0 = disabled); use --debug to verify
-  ff_only: true
+  ff_only: true                 # false: preview and merge nonconflicting multi-writer history
 
 # STANDALONE MODE: process locally
 processing:
@@ -396,6 +396,21 @@ hooks:
     working_directory: "."
     timeout_seconds: 600
 ```
+
+For data repos with concurrent writers (for example, local notes plus a remote
+calendar updater), set `sync.ff_only: false`. Merge mode requires a clean working
+tree on the configured branch and previews the merge before updating files.
+Conflicts leave local work untouched and prevent pushing; no rebase, force-push,
+or automatic conflict resolution is performed. It requires Git 2.38+ for
+`merge-tree --write-tree`. `MEETINGNOTES_SYNC_FF_ONLY=false` can override this
+setting in a service environment without editing its YAML configuration.
+
+Pushes retry up to three times when another writer advances the remote between
+sync and push. Authentication failures are not retried within that operation.
+Background polling also retries unpublished commits after connectivity returns.
+The webhook health response reports `status: degraded` and `sync.last_error`
+when synchronization or publication fails. Async processing coalesces new
+triggers into a further pass rather than dropping arrivals during a batch.
 
 ### Daemon Command-Line Options
 
